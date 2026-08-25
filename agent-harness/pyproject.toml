@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "Agentic AI workflow harness with OTel tracing, cost governance, and trust gating"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+
+dependencies = [
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

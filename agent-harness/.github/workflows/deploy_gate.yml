@@ -1,0 +1,125 @@
+name: Agent Deploy Gate
+
+on:
+  # Call from your deploy workflow before the actual deploy step:
+  # uses: ./.github/workflows/deploy_gate.yml
+  # with:
+  #   service: my-service
+  #   environment: production
+  workflow_call:
+    inputs:
+      service:
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+        default: production
+      diff_summary:
+        type: string
+        required: false
+        default: ""
+      lines_added:
+        type: number
+        required: false
+        default: 0
+      lines_deleted:
+        type: number
+        required: false
+        default: 0
+      has_db_migration:
+        type: boolean
+        required: false
+        default: false
+      recent_incident:
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      recommendation:
+        description: "DEPLOY | DEPLOY_WITH_CAUTION | HOLD"
+        value: ${{ jobs.gate.outputs.recommendation }}
+      risk_level:
+        description: "LOW | MEDIUM | HIGH | CRITICAL"
+        value: ${{ jobs.gate.outputs.risk_level }}
+
+  # Also triggerable manually for testing
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service name
+        required: true
+      environment:
+        description: Target environment
+        required: true
+        default: production
+
+jobs:
+  gate:
+    name: Assess deploy risk
+    runs-on: ubuntu-latest
+    outputs:
+      recommendation: ${{ steps.assess.outputs.recommendation }}
+      risk_level:     ${{ steps.assess.outputs.risk_level }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Assess deployment risk
+        id: assess
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_AUDIT_LOG:   /tmp/deploy_gate_audit.jsonl
+        run: |
+          python - <<'EOF'
+          import os, sys, json, datetime
+          sys.path.insert(0, '.')
+          from agents.deploy_risk import DeploymentContext, assess_deploy_risk, format_deploy_output
+
+          # Build context from workflow inputs
+          ctx = DeploymentContext(
+              service        = "${{ inputs.service }}",
+              environment    = "${{ inputs.environment }}",
+              diff_summary   = """${{ inputs.diff_summary || 'No diff summary provided — assess based on risk signals only.' }}""",
+              files_changed  = [],    # Could be populated by parsing git diff
+              lines_added    = int("${{ inputs.lines_added || 0 }}"),
+              lines_deleted  = int("${{ inputs.lines_deleted || 0 }}"),
+              has_db_migration = "${{ inputs.has_db_migration }}" == "true",
+              deploy_time_utc  = datetime.datetime.utcnow(),
+              recent_incident  = "${{ inputs.recent_incident }}" == "true",
+          )
+
+          result = assess_deploy_risk(ctx)
+          output = format_deploy_output(result)
+          print(output)
+
+          rec  = result.data.get("recommendation", "HOLD") if result.success else "HOLD"
+          risk = result.data.get("risk_level", "UNKNOWN")  if result.success else "UNKNOWN"
+
+          # Write GitHub outputs
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"recommendation={rec}\n")
+              f.write(f"risk_level={risk}\n")
+
+          # Check for human override
+          if os.environ.get("DEPLOY_OVERRIDE", "").lower() == "true":
+              print("\n⚠️  DEPLOY_OVERRIDE=true — gate bypassed")
+              sys.exit(0)
+
+          sys.exit(0 if rec in ("DEPLOY", "DEPLOY_WITH_CAUTION") else 1)
+          EOF
+
+      - name: Upload gate audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-gate-${{ inputs.service }}-${{ github.run_id }}
+          path: /tmp/deploy_gate_audit.jsonl
+          retention-days: 90

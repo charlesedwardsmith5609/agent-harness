@@ -1,0 +1,64 @@
+name: Agent PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Only run on PRs targeting main/production branches
+    branches: [main, master, production, 'release/**']
+
+# Only one review per PR at a time — cancel in-progress if new commit pushed
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Agent review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # post comment
+      contents:      read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install anthropic opentelemetry-sdk opentelemetry-exporter-otlp
+
+      - name: Run PR review agent
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          AGENT_AUDIT_LOG:   /tmp/agent_audit.jsonl
+          # Optional: emit traces to your OTel collector
+          # OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_ENDPOINT }}
+        run: |
+          python agents/pr_reviewer.py \
+            --pr   ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }}
+        # Exit codes: 0=approved, 1=changes requested, 2=blocked, 3=agent failure
+        continue-on-error: true   # Always run next steps to upload artifacts
+
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-audit-pr-${{ github.event.pull_request.number }}
+          path: /tmp/agent_audit.jsonl
+          retention-days: 30
+
+      # Gate the PR: if agent returned BLOCK (exit 2) or AGENT FAILURE (exit 3),
+      # fail the check so merging is blocked until resolved or overridden.
+      - name: Evaluate gate
+        run: |
+          EXIT_CODE="${{ steps.review.outputs.exit_code || steps.review.outcome == 'failure' && '3' || '0' }}"
+          if [ "${{ steps.review.outcome }}" = "failure" ]; then
+            echo "::error::Agent review returned a gate block. See PR comment for details."
+            exit 1
+          fi

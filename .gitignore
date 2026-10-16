@@ -1,4 +1,4 @@
-# Local scratch — never commit.
+# Local scratch - never commit.
 *.local.md
 commit-message.local.txt
 

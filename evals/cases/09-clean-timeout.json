@@ -1,0 +1,6 @@
+{
+  "id": "09-clean-timeout",
+  "expected_gate": "APPROVE",
+  "expected_category": null,
+  "diff": "diff --git a/client/fetch.py b/client/fetch.py\n--- a/client/fetch.py\n+++ b/client/fetch.py\n@@ -1,1 +1,1 @@\n-    return requests.get(url).json()\n+    return requests.get(url, timeout=5).json()\n"
+}

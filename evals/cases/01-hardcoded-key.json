@@ -1,0 +1,6 @@
+{
+  "id": "01-hardcoded-key",
+  "expected_gate": "BLOCK",
+  "expected_category": "security",
+  "diff": "diff --git a/service/config.py b/service/config.py\n--- a/service/config.py\n+++ b/service/config.py\n@@ -1,1 +1,3 @@\n+AWS_SECRET_ACCESS_KEY = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"\n+def client():\n+    return boto3.client(\"s3\", aws_secret_access_key=AWS_SECRET_ACCESS_KEY)\n"
+}

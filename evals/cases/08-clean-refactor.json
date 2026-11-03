@@ -1,0 +1,6 @@
+{
+  "id": "08-clean-refactor",
+  "expected_gate": "APPROVE",
+  "expected_category": null,
+  "diff": "diff --git a/util/math.py b/util/math.py\n--- a/util/math.py\n+++ b/util/math.py\n@@ -1,1 +1,2 @@\n-def add(a,b): return a+b\n+def add(a: int, b: int) -> int:\n+    return a + b\n"
+}

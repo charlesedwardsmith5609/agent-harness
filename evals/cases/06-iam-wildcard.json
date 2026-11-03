@@ -1,0 +1,6 @@
+{
+  "id": "06-iam-wildcard",
+  "expected_gate": "BLOCK",
+  "expected_category": "security",
+  "diff": "diff --git a/infra/iam.tf b/infra/iam.tf\n--- a/infra/iam.tf\n+++ b/infra/iam.tf\n@@ -1,1 +1,3 @@\n+resource \"aws_iam_policy\" \"app\" {\n+  policy = jsonencode({Statement=[{Effect=\"Allow\",Action=\"*\",Resource=\"*\"}]})\n+}\n"
+}

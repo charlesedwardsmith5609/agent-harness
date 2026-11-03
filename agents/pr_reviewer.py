@@ -175,41 +175,24 @@ def format_github_comment(result: AgentResult, pr_number: int) -> str:
     return body
 
 
-def review_pr(
-    pr_number: int,
-    repo: str,
-    token: str | None = None,
+def review_diff(
+    diff: str,
+    repo: str = "local/diff",
+    pr_number: int = 0,
     api_key: str | None = None,
-    post_comment: bool = True,
+    harness: AgentHarness | None = None,
 ) -> AgentResult:
-    """
-    Run the PR review agent on a pull request.
-
-    Args:
-        pr_number:    GitHub PR number to review.
-        repo:         GitHub repo in "owner/name" format.
-        token:        GitHub token (defaults to GITHUB_TOKEN env var).
-        api_key:      Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
-        post_comment: Whether to post findings as a PR comment.
-
-    Returns:
-        AgentResult with structured findings and gate decision.
-    """
-    token = token or os.environ.get("GITHUB_TOKEN", "")
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-
-    config = RunConfig(
-        agent_name="pr-reviewer",
-        model="claude-sonnet-5-5",
-        max_tokens=2048,
-        min_confidence=0.65,
-        max_cost_usd=0.30,
-        audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
-    )
-    harness = AgentHarness(config=config, api_key=api_key)
-
-    # Fetch the diff
-    diff = fetch_pr_diff(pr_number=pr_number, repo=repo, token=token)
+    """Review a unified diff string. Used by review_pr and by the offline eval suite."""
+    if harness is None:
+        config = RunConfig(
+            agent_name="pr-reviewer",
+            model="claude-sonnet-5-5",
+            max_tokens=2048,
+            min_confidence=0.65,
+            max_cost_usd=0.30,
+            audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
+        )
+        harness = AgentHarness(config=config, api_key=api_key)
 
     # Truncate very large diffs to stay within context limits
     MAX_DIFF_CHARS = 40_000
@@ -234,6 +217,35 @@ def review_pr(
                 "Diff exceeded the review limit and was truncated; human review of the "
                 "remainder is required. " + str(result.data.get("reasoning", ""))
             )
+    return result
+
+
+def review_pr(
+    pr_number: int,
+    repo: str,
+    token: str | None = None,
+    api_key: str | None = None,
+    post_comment: bool = True,
+) -> AgentResult:
+    """
+    Run the PR review agent on a pull request.
+
+    Args:
+        pr_number:    GitHub PR number to review.
+        repo:         GitHub repo in "owner/name" format.
+        token:        GitHub token (defaults to GITHUB_TOKEN env var).
+        api_key:      Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
+        post_comment: Whether to post findings as a PR comment.
+
+    Returns:
+        AgentResult with structured findings and gate decision.
+    """
+    token = token or os.environ.get("GITHUB_TOKEN", "")
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Fetch the diff
+    diff = fetch_pr_diff(pr_number=pr_number, repo=repo, token=token)
+    result = review_diff(diff, repo=repo, pr_number=pr_number, api_key=api_key)
 
     if post_comment and token:
         comment = format_github_comment(result, pr_number)

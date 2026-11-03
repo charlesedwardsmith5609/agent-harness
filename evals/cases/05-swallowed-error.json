@@ -1,0 +1,6 @@
+{
+  "id": "05-swallowed-error",
+  "expected_gate": "REQUEST_CHANGES",
+  "expected_category": "reliability",
+  "diff": "diff --git a/jobs/sync.py b/jobs/sync.py\n--- a/jobs/sync.py\n+++ b/jobs/sync.py\n@@ -1,1 +1,5 @@\n+def sync(conn):\n+    try:\n+        conn.commit()\n+    except:\n+        pass\n"
+}

@@ -117,6 +117,21 @@ They do:
 - Emit telemetry for every run, including failures
 - Default to the safe path (BLOCK / HOLD) when uncertain
 
+## Reviewer eval
+
+`evals/` holds ten seeded diffs (six with a planted defect: hardcoded key, SQL injection, unbounded
+retry, missing timeout, swallowed error, wildcard IAM; four clean) and a scorer that reports
+precision, recall, exact-gate rate and category hit rate for the PR reviewer.
+
+```bash
+python -m evals.run_eval          # live run, needs ANTHROPIC_API_KEY, costs a few cents
+python -m evals.run_eval --json
+```
+
+The scorer itself is unit-tested offline (`tests/test_evals.py`) with fake reviewers, so CI checks
+the harness without spending tokens. Results from live runs are not committed yet; run it against
+your model and settings before trusting the gate. A failed or timed-out review counts as a miss.
+
 ## Tests
 
 ```bash

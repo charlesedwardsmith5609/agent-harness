@@ -1,0 +1,6 @@
+{
+  "id": "07-clean-docs",
+  "expected_gate": "APPROVE",
+  "expected_category": null,
+  "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-Run make test.\n+Run `make test` before opening a PR.\n"
+}

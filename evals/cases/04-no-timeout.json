@@ -1,0 +1,6 @@
+{
+  "id": "04-no-timeout",
+  "expected_gate": "REQUEST_CHANGES",
+  "expected_category": "reliability",
+  "diff": "diff --git a/client/pay.py b/client/pay.py\n--- a/client/pay.py\n+++ b/client/pay.py\n@@ -1,1 +1,2 @@\n+def charge(payload):\n+    return requests.post(\"https://payments.internal/charge\", json=payload)\n"
+}

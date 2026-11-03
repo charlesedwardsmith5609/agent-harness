@@ -1,0 +1,6 @@
+{
+  "id": "03-unbounded-retry",
+  "expected_gate": "REQUEST_CHANGES",
+  "expected_category": "reliability",
+  "diff": "diff --git a/client/fetch.py b/client/fetch.py\n--- a/client/fetch.py\n+++ b/client/fetch.py\n@@ -1,1 +1,6 @@\n+def fetch(url):\n+    while True:\n+        try:\n+            return requests.get(url).json()\n+        except Exception:\n+            continue\n"
+}

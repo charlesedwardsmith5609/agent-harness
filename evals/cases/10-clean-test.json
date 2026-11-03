@@ -1,0 +1,6 @@
+{
+  "id": "10-clean-test",
+  "expected_gate": "APPROVE",
+  "expected_category": null,
+  "diff": "diff --git a/tests/test_math.py b/tests/test_math.py\n--- a/tests/test_math.py\n+++ b/tests/test_math.py\n@@ -1,1 +1,2 @@\n+def test_add():\n+    assert add(1, 2) == 3\n"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "02-sql-injection",
+  "expected_gate": "BLOCK",
+  "expected_category": "security",
+  "diff": "diff --git a/api/users.py b/api/users.py\n--- a/api/users.py\n+++ b/api/users.py\n@@ -1,1 +1,2 @@\n+def find(db, name):\n+    return db.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n"
+}

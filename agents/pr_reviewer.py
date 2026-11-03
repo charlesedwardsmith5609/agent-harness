@@ -16,16 +16,13 @@ LOW/INFO → APPROVE with comments
 """
 
 from __future__ import annotations
+
+import json
 import os
 import sys
-import json
-import subprocess
-from typing import Optional
 
 # Allow running from repo root
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from harness.agent import AgentHarness, RunConfig, AgentResult
-
+from harness.agent import AgentHarness, AgentResult, RunConfig
 
 SYSTEM_PROMPT = """\
 You are a production platform reliability and security engineer reviewing a pull request diff.
@@ -93,6 +90,7 @@ SLO impact:
 def fetch_pr_diff(pr_number: int, repo: str, token: str) -> str:
     """Fetch the unified diff for a GitHub PR."""
     import urllib.request
+
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
     req = urllib.request.Request(
         url,
@@ -113,12 +111,12 @@ def post_pr_comment(
     body: str,
 ) -> None:
     """Post a comment on a GitHub PR."""
-    import urllib.request
     import urllib.parse
+    import urllib.request
 
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     data = json.dumps({"body": body}).encode()
-    req  = urllib.request.Request(
+    req = urllib.request.Request(
         url,
         data=data,
         headers={
@@ -144,7 +142,7 @@ def format_github_comment(result: AgentResult, pr_number: int) -> str:
             f"*Manual review required before merging.*"
         )
 
-    data     = result.data
+    data = result.data
     decision = data.get("gate_decision", "APPROVE")
     findings = data.get("findings", [])
 
@@ -156,16 +154,13 @@ def format_github_comment(result: AgentResult, pr_number: int) -> str:
     else:
         lines = [
             f"## 🤖 Agent PR Review — {emoji} {decision}\n",
-            f"*Confidence: {result.confidence:.0%} · Cost: ${result.cost_usd:.4f} · "
-            f"Run: `{result.run_id}`*\n",
+            f"*Confidence: {result.confidence:.0%} · Cost: ${result.cost_usd:.4f} · Run: `{result.run_id}`*\n",
             f"> {data.get('reasoning', '')}\n",
         ]
         if findings:
             lines.append("\n### Findings\n")
             for f in findings:
-                sev_emoji = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "💡", "INFO": "ℹ️"}.get(
-                    f.get("severity", ""), "•"
-                )
+                sev_emoji = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "💡", "INFO": "ℹ️"}.get(f.get("severity", ""), "•")
                 lines.append(
                     f"**{sev_emoji} [{f['severity']}] {f['title']}**  \n"
                     f"`{f.get('file', 'general')}`"
@@ -181,10 +176,10 @@ def format_github_comment(result: AgentResult, pr_number: int) -> str:
 
 
 def review_pr(
-    pr_number:  int,
-    repo:       str,
-    token:      Optional[str] = None,
-    api_key:    Optional[str] = None,
+    pr_number: int,
+    repo: str,
+    token: str | None = None,
+    api_key: str | None = None,
     post_comment: bool = True,
 ) -> AgentResult:
     """
@@ -200,14 +195,13 @@ def review_pr(
     Returns:
         AgentResult with structured findings and gate decision.
     """
-    token   = token   or os.environ.get("GITHUB_TOKEN", "")
+    token = token or os.environ.get("GITHUB_TOKEN", "")
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
     config = RunConfig(
         agent_name="pr-reviewer",
         model="claude-sonnet-4-6",
         max_tokens=2048,
-        temperature=0.2,
         min_confidence=0.65,
         max_cost_usd=0.30,
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
@@ -219,20 +213,27 @@ def review_pr(
 
     # Truncate very large diffs to stay within context limits
     MAX_DIFF_CHARS = 40_000
-    if len(diff) > MAX_DIFF_CHARS:
+    truncated = len(diff) > MAX_DIFF_CHARS
+    if truncated:
         diff = diff[:MAX_DIFF_CHARS] + "\n\n[... diff truncated for length ...]"
 
-    user_message = (
-        f"Repository: {repo}\n"
-        f"PR: #{pr_number}\n\n"
-        f"Diff:\n```diff\n{diff}\n```"
-    )
+    user_message = f"Repository: {repo}\nPR: #{pr_number}\n\nDiff:\n```diff\n{diff}\n```"
 
     result = harness.run(
         system_prompt=SYSTEM_PROMPT,
         user_message=user_message,
         context={"github.repo": repo, "github.pr_number": pr_number},
     )
+
+    # A review of a partial diff must never approve: unseen code has not been reviewed.
+    if truncated and result.success:
+        result.data["truncated"] = True
+        if result.data.get("gate_decision") == "APPROVE":
+            result.data["gate_decision"] = "REQUEST_CHANGES"
+            result.data["reasoning"] = (
+                "Diff exceeded the review limit and was truncated; human review of the "
+                "remainder is required. " + str(result.data.get("reasoning", ""))
+            )
 
     if post_comment and token:
         comment = format_github_comment(result, pr_number)
@@ -245,7 +246,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run PR review agent")
-    parser.add_argument("--pr",   type=int, required=True, help="PR number")
+    parser.add_argument("--pr", type=int, required=True, help="PR number")
     parser.add_argument("--repo", required=True, help="owner/repo")
     parser.add_argument("--no-comment", action="store_true", help="Skip posting PR comment")
     args = parser.parse_args()

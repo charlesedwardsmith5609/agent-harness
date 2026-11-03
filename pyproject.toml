@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness"
+version = "0.2.0"
+description = "Agentic AI workflow harness with OTel tracing, cost governance, and trust gating"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "anthropic>=0.40,<3",
+]
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+include = ["harness*", "agents*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E221", "E241", "E272", "E701", "E702"]  # aligned columns in dataclasses and prompts
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["harness"]
+ignore_missing_imports = true

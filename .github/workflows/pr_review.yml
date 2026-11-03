@@ -27,8 +27,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install anthropic opentelemetry-sdk opentelemetry-exporter-otlp
+        run: pip install -e ".[otel]"
 
       - name: Run PR review agent
         id: review
@@ -57,7 +56,6 @@ jobs:
       # fail the check so merging is blocked until resolved or overridden.
       - name: Evaluate gate
         run: |
-          EXIT_CODE="${{ steps.review.outputs.exit_code || steps.review.outcome == 'failure' && '3' || '0' }}"
           if [ "${{ steps.review.outcome }}" = "failure" ]; then
             echo "::error::Agent review returned a gate block. See PR comment for details."
             exit 1

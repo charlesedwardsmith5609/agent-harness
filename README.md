@@ -15,11 +15,11 @@ Built around a core principle: **agents earn trust on small, well-defined work w
 ## Harness features
 
 - **OTel instrumentation** — every agent run emits a trace span with confidence, cost, gate decision, and duration as span attributes. Plug in any OTLP-compatible backend (Honeycomb, Jaeger, Chronosphere).
-- **Cost tracking** — every run reports exact API cost. A configurable `max_cost_usd` gate blocks unexpectedly expensive runs.
+- **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused.
 - **Confidence gating** — agents self-report confidence (0.0–1.0). Runs below `min_confidence` are blocked before their output reaches downstream systems.
 - **Structured outputs** — all agents return parsed JSON, not prose. Parseable by CI systems, dashboards, and other agents.
 - **Audit log** — every decision written to a JSONL file, including failures. Append to your SIEM or log aggregator.
-- **Fail-safe defaults** — if the agent call fails for any reason, the gate defaults to BLOCK / HOLD. Silence is not approval.
+- **Fail-safe defaults** — a missing API key, missing SDK, API error, malformed JSON, or unpriced model all produce a failed, gated result (BLOCK / HOLD). Silence is not approval. `RunConfig(dry_run=True)` returns a canned response for local wiring tests and can never pass a gate.
 
 ## Quick start
 
@@ -124,4 +124,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run without an API key — the harness includes a stub mode for environments where `ANTHROPIC_API_KEY` is not set.
+Tests run without an API key: the Anthropic client is faked, and the suite covers the fail-closed paths (no key, no SDK, malformed output, pre-call cost block), the gates, the audit log, and the PR reviewer's rule that a truncated diff can never be approved.
+
+```bash
+pip install -e ".[dev,otel]"
+ruff check . && mypy && pytest -q
+```
+
+Note: in CI the PR review fails closed when `ANTHROPIC_API_KEY` is unavailable (for example on pull requests from forks), so those PRs need a manual review.

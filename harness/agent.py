@@ -20,50 +20,58 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 try:
     import anthropic
+
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 try:
     from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-# ── Cost constants (USD per million tokens, claude-sonnet-4-6) ──────────────
-COST_PER_M_INPUT  = 3.00   # $3.00 / 1M input tokens
-COST_PER_M_OUTPUT = 15.00  # $15.00 / 1M output tokens
+# ── Pricing (USD per million tokens: input, output) ─────────────────────────
+# Keep this table current, or pass price_per_m_input/output in RunConfig. A model that is
+# in neither place cannot be priced, so the run is refused rather than guessed at.
+MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-sonnet-4-6": (3.00, 15.00),
+}
+CHARS_PER_TOKEN = 3.5  # conservative estimate for the pre-call cost ceiling
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AgentResult:
     """Structured output from a single agent run."""
-    agent_name:   str
-    run_id:       str
-    success:      bool
-    data:         dict                        # The parsed JSON payload
-    confidence:   float                       # 0.0–1.0, agent self-reported
-    reasoning:    str                         # Agent's chain-of-thought summary
-    cost_usd:     float                       # Exact API cost for this run
-    duration_s:   float                       # Wall-clock time in seconds
+
+    agent_name: str
+    run_id: str
+    success: bool
+    data: dict  # The parsed JSON payload
+    confidence: float  # 0.0–1.0, agent self-reported
+    reasoning: str  # Agent's chain-of-thought summary
+    cost_usd: float  # Exact API cost for this run
+    duration_s: float  # Wall-clock time in seconds
     input_tokens: int
     output_tokens: int
-    model:        str
-    gate_passed:  bool = True                 # Set by gate evaluation
-    gate_reason:  str  = ""
+    model: str
+    gate_passed: bool = True  # Set by gate evaluation
+    gate_reason: str = ""
 
     def passed(self) -> bool:
         return self.success and self.gate_passed
@@ -75,25 +83,29 @@ class AgentResult:
 @dataclass
 class RunConfig:
     """Configuration for a single agent run."""
-    agent_name:          str
-    model:               str   = "claude-sonnet-4-6"
-    max_tokens:          int   = 2048
-    temperature:         float = 0.2           # Low temp for consistent structured output
-    min_confidence:      float = 0.7           # Gate: reject below this
-    max_cost_usd:        float = 0.50          # Gate: reject if estimated cost exceeds this
-    otel_endpoint:       Optional[str] = None  # OTLP gRPC endpoint
-    audit_log_path:      Optional[str] = None  # Path to append audit JSONL
+
+    agent_name: str
+    model: str = "claude-sonnet-4-6"
+    max_tokens: int = 2048
+    min_confidence: float = 0.7  # Gate: reject below this
+    max_cost_usd: float = 0.50  # Gate: reject if estimated cost exceeds this
+    otel_endpoint: str | None = None  # OTLP gRPC endpoint
+    audit_log_path: str | None = None  # Path to append audit JSONL
+    price_per_m_input: float | None = None  # Override MODEL_PRICES (USD / 1M tokens)
+    price_per_m_output: float | None = None
+    dry_run: bool = False  # Canned response, no API call. Never a real pass.
 
 
 # ── OTel setup ────────────────────────────────────────────────────────────────
 
-def _setup_tracer(service_name: str, endpoint: Optional[str]) -> Any:
+
+def _setup_tracer(service_name: str, endpoint: str | None) -> Any:
     if not OTEL_AVAILABLE:
         return None
-    resource  = Resource({"service.name": service_name, "service.version": "0.1.0"})
-    provider  = TracerProvider(resource=resource)
+    resource = Resource({"service.name": service_name, "service.version": "0.1.0"})
+    provider = TracerProvider(resource=resource)
     if endpoint:
-        exporter  = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
         processor = BatchSpanProcessor(exporter)
         provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
@@ -101,6 +113,7 @@ def _setup_tracer(service_name: str, endpoint: Optional[str]) -> Any:
 
 
 # ── Core harness ─────────────────────────────────────────────────────────────
+
 
 class AgentHarness:
     """
@@ -111,21 +124,21 @@ class AgentHarness:
         api_key:     Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
     """
 
-    def __init__(self, config: RunConfig, api_key: Optional[str] = None) -> None:
+    def __init__(self, config: RunConfig, api_key: str | None = None) -> None:
         self.config = config
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._tracer  = _setup_tracer(
+        self._tracer = _setup_tracer(
             service_name=f"agent-harness.{config.agent_name}",
             endpoint=config.otel_endpoint,
         )
         if not ANTHROPIC_AVAILABLE:
-            logger.warning("anthropic package not installed — using stub mode")
+            logger.warning("anthropic package not installed: real runs will fail closed")
 
     def run(
         self,
         system_prompt: str,
-        user_message:  str,
-        context:       Optional[dict] = None,
+        user_message: str,
+        context: dict | None = None,
     ) -> AgentResult:
         """
         Execute one agent turn and return a structured AgentResult.
@@ -142,27 +155,28 @@ class AgentHarness:
             AgentResult — always returned, even on failure (success=False).
         """
         run_id = str(uuid.uuid4())[:8]
-        start  = time.monotonic()
+        start = time.monotonic()
 
         span_ctx = (
             self._tracer.start_as_current_span(
                 f"agent.{self.config.agent_name}.run",
                 attributes={
-                    "agent.name":   self.config.agent_name,
+                    "agent.name": self.config.agent_name,
                     "agent.run_id": run_id,
-                    "agent.model":  self.config.model,
+                    "agent.model": self.config.model,
                     **(context or {}),
                 },
             )
-            if self._tracer else _NullSpan()
+            if self._tracer
+            else _NullSpan()
         )
 
         with span_ctx as span:
             try:
                 raw, input_tok, output_tok = self._call_api(system_prompt, user_message)
                 data, confidence, reasoning = self._parse_response(raw)
-                cost  = self._calculate_cost(input_tok, output_tok)
-                dur   = time.monotonic() - start
+                cost = self._calculate_cost(input_tok, output_tok)
+                dur = time.monotonic() - start
 
                 result = AgentResult(
                     agent_name=self.config.agent_name,
@@ -180,12 +194,15 @@ class AgentHarness:
 
                 # Trust gate evaluation
                 result = self._evaluate_gates(result)
+                if self.config.dry_run:
+                    result.gate_passed = False
+                    result.gate_reason = "Dry run: no API call was made"
 
                 if hasattr(span, "set_attribute"):
-                    span.set_attribute("agent.confidence",  confidence)
-                    span.set_attribute("agent.cost_usd",    cost)
+                    span.set_attribute("agent.confidence", confidence)
+                    span.set_attribute("agent.cost_usd", cost)
                     span.set_attribute("agent.gate_passed", result.gate_passed)
-                    span.set_attribute("agent.duration_s",  dur)
+                    span.set_attribute("agent.duration_s", dur)
 
             except Exception as exc:
                 dur = time.monotonic() - start
@@ -205,7 +222,7 @@ class AgentHarness:
                     output_tokens=0,
                     model=self.config.model,
                     gate_passed=False,
-                    gate_reason="Agent execution failed",
+                    gate_reason=f"Agent execution failed: {exc}",
                 )
 
         self._audit(result)
@@ -213,27 +230,61 @@ class AgentHarness:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _call_api(self, system: str, user: str) -> tuple[str, int, int]:
-        """Call the Anthropic API and return (raw_text, input_tokens, output_tokens)."""
-        if not ANTHROPIC_AVAILABLE or not self._api_key:
-            # Stub for environments without the SDK or a key
-            stub = json.dumps({
-                "confidence": 0.85,
-                "reasoning": "Stub response — set ANTHROPIC_API_KEY to use real API",
-                "findings": [],
-                "recommendation": "STUB",
-            })
-            return stub, 100, 50
+    def _prices(self) -> tuple[float, float]:
+        """Return (input, output) USD per 1M tokens, or raise if the model cannot be priced."""
+        inp, out = self.config.price_per_m_input, self.config.price_per_m_output
+        if inp is not None and out is not None:
+            return inp, out
+        if self.config.model in MODEL_PRICES:
+            return MODEL_PRICES[self.config.model]
+        raise RuntimeError(
+            f"No pricing for model {self.config.model!r}. Add it to MODEL_PRICES or set "
+            "price_per_m_input and price_per_m_output in RunConfig."
+        )
 
-        client   = anthropic.Anthropic(api_key=self._api_key)
+    def _worst_case_cost(self, system: str, user: str) -> float:
+        """Upper bound on cost before calling: estimated input plus the full max_tokens output."""
+        inp, out = self._prices()
+        est_in = (len(system) + len(user)) / CHARS_PER_TOKEN
+        return est_in / 1_000_000 * inp + self.config.max_tokens / 1_000_000 * out
+
+    def _call_api(self, system: str, user: str) -> tuple[str, int, int]:
+        """Call the Anthropic API and return (raw_text, input_tokens, output_tokens).
+
+        Fails closed: a missing SDK or key raises, so the run is reported as failed and
+        gated. Only an explicit RunConfig(dry_run=True) returns a canned response, and that
+        response is marked DRY_RUN with zero confidence so no gate can pass on it.
+        """
+        if self.config.dry_run:
+            canned = json.dumps(
+                {
+                    "confidence": 0.0,
+                    "reasoning": "DRY_RUN: no API call was made",
+                    "findings": [],
+                    "recommendation": "DRY_RUN",
+                }
+            )
+            return canned, 0, 0
+        if not ANTHROPIC_AVAILABLE:
+            raise RuntimeError("anthropic package is not installed (pip install anthropic)")
+        if not self._api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+        ceiling = self._worst_case_cost(system, user)
+        if ceiling > self.config.max_cost_usd:
+            raise RuntimeError(
+                f"Worst-case cost ${ceiling:.4f} exceeds max ${self.config.max_cost_usd:.2f}; call not made"
+            )
+
+        client = anthropic.Anthropic(api_key=self._api_key)
         response = client.messages.create(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        raw = response.content[0].text
+        # Content may include non-text blocks (thinking, tool use); keep only the text.
+        raw = "".join(b.text for b in response.content if b.type == "text")
         return raw, response.usage.input_tokens, response.usage.output_tokens
 
     def _parse_response(self, raw: str) -> tuple[dict, float, str]:
@@ -242,32 +293,25 @@ class AgentHarness:
         text = raw.strip()
         if text.startswith("```"):
             lines = text.splitlines()
-            text  = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+            text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
 
         data = json.loads(text)
         confidence = float(data.get("confidence", 0.0))
-        reasoning  = str(data.get("reasoning", ""))
+        reasoning = str(data.get("reasoning", ""))
         return data, confidence, reasoning
 
     def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        return (
-            input_tokens  / 1_000_000 * COST_PER_M_INPUT
-            + output_tokens / 1_000_000 * COST_PER_M_OUTPUT
-        )
+        inp, out = self._prices()
+        return input_tokens / 1_000_000 * inp + output_tokens / 1_000_000 * out
 
     def _evaluate_gates(self, result: AgentResult) -> AgentResult:
         """Apply confidence and cost gates. Updates result in place."""
         if result.confidence < self.config.min_confidence:
             result.gate_passed = False
-            result.gate_reason = (
-                f"Confidence {result.confidence:.2f} below threshold "
-                f"{self.config.min_confidence:.2f}"
-            )
+            result.gate_reason = f"Confidence {result.confidence:.2f} below threshold {self.config.min_confidence:.2f}"
         elif result.cost_usd > self.config.max_cost_usd:
             result.gate_passed = False
-            result.gate_reason = (
-                f"Cost ${result.cost_usd:.4f} exceeds max ${self.config.max_cost_usd:.2f}"
-            )
+            result.gate_reason = f"Cost ${result.cost_usd:.4f} exceeds max ${self.config.max_cost_usd:.2f}"
         return result
 
     def _audit(self, result: AgentResult) -> None:
@@ -284,7 +328,15 @@ class AgentHarness:
 
 class _NullSpan:
     """No-op span for when OTel is not available."""
-    def __enter__(self): return self
-    def __exit__(self, *_): pass
-    def set_attribute(self, *_): pass
-    def record_exception(self, *_): pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def set_attribute(self, *_):
+        pass
+
+    def record_exception(self, *_):
+        pass

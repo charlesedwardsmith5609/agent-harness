@@ -144,3 +144,20 @@ def test_default_model_is_priced():
     from harness.agent import MODEL_PRICES
 
     assert RunConfig(agent_name="x").model in MODEL_PRICES
+
+
+def test_run_emits_span_with_cost_and_gate_attributes():
+    """The span carries the attributes the observability demo relies on."""
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    harness = AgentHarness(RunConfig(agent_name="span-test", dry_run=True))
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    harness._tracer = provider.get_tracer("span-test")
+    harness.run("Return JSON.", "task")
+    attrs = exporter.get_finished_spans()[0].attributes
+    assert {"agent.cost_usd", "agent.gate_passed", "agent.confidence"} <= set(attrs)

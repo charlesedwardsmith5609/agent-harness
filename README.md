@@ -117,6 +117,21 @@ They do:
 - Emit telemetry for every run, including failures
 - Default to the safe path (BLOCK / HOLD) when uncertain
 
+## Observability demo
+
+Every run emits an OpenTelemetry span with `agent.confidence`, `agent.cost_usd`, `agent.gate_passed`
+and `agent.duration_s`, so cost and gate decisions can be graphed and alerted on like any service.
+To see traces locally (no API key, no spend):
+
+```bash
+docker compose -f examples/observability/docker-compose.yml up -d
+pip install -e ".[otel]"
+python examples/observability/demo.py     # dry-run agent, exports to localhost:4317
+# UI: http://localhost:16686, service "agent-harness.demo-agent"
+```
+
+The span attributes are covered by a unit test; the Jaeger compose file has not been exercised in CI.
+
 ## Reviewer eval
 
 `evals/` holds ten seeded diffs (six with a planted defect: hardcoded key, SQL injection, unbounded

@@ -146,7 +146,7 @@ def assess_deploy_risk(
 
     config = RunConfig(
         agent_name="deploy-risk",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
         max_tokens=1024,  # Very low — we want consistent, conservative decisions
         min_confidence=0.70,
         max_cost_usd=0.20,

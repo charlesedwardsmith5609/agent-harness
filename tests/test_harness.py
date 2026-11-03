@@ -138,3 +138,9 @@ class TestPrReviewer:
 
         failed = AgentHarness(RunConfig(agent_name="t"), api_key="").run("s", "u")
         assert "Manual review required" in format_github_comment(failed, 1)
+
+
+def test_default_model_is_priced():
+    from harness.agent import MODEL_PRICES
+
+    assert RunConfig(agent_name="x").model in MODEL_PRICES

@@ -162,7 +162,7 @@ def generate_runbook(
 
     config = RunConfig(
         agent_name="runbook-generator",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
         max_tokens=3000,
         min_confidence=0.60,
         max_cost_usd=0.50,

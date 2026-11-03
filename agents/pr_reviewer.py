@@ -200,7 +200,7 @@ def review_pr(
 
     config = RunConfig(
         agent_name="pr-reviewer",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
         max_tokens=2048,
         min_confidence=0.65,
         max_cost_usd=0.30,

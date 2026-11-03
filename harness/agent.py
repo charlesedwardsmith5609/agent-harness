@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # Keep this table current, or pass price_per_m_input/output in RunConfig. A model that is
 # in neither place cannot be priced, so the run is refused rather than guessed at.
 MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5-5": (2.00, 10.00),  # claude.com/pricing, checked 2026-11-02
     "claude-sonnet-4-6": (3.00, 15.00),
 }
 CHARS_PER_TOKEN = 3.5  # conservative estimate for the pre-call cost ceiling
@@ -85,7 +86,7 @@ class RunConfig:
     """Configuration for a single agent run."""
 
     agent_name: str
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5-5"
     max_tokens: int = 2048
     min_confidence: float = 0.7  # Gate: reject below this
     max_cost_usd: float = 0.50  # Gate: reject if estimated cost exceeds this

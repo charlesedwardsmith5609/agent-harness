@@ -29,8 +29,15 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["harness*", "agents*"]
 
+[tool.setuptools.package-data]
+harness = ["effort_defaults.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=harness --cov=agents --cov-fail-under=70"
+
+[tool.coverage.run]
+omit = ["agents/__init__.py", "harness/__init__.py"]
 
 [tool.ruff]
 target-version = "py310"

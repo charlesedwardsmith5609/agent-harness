@@ -21,7 +21,9 @@ import sys
 from dataclasses import dataclass
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.defaults import effort_for
 from harness.lifecycle import CompletionCriteria, Phase
+from harness.schemas import EvidenceError, validate_deploy_evidence
 
 SYSTEM_PROMPT = """\
 You are a platform reliability engineer evaluating whether a deployment is safe to proceed.
@@ -138,15 +140,17 @@ def assess_deploy_risk(
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
+    daily = os.environ.get("AGENT_MAX_COST_USD_PER_DAY", "").strip()
     config = RunConfig(
         agent_name="deploy-risk",
         model="claude-sonnet-5-5",
         max_tokens=1024,  # Very low — we want consistent, conservative decisions
         min_confidence=0.70,
         max_cost_usd=0.20,
-        # High: deploy gates are consequential; lower only after an effort sweep holds quality.
-        reasoning_effort="high",
+        max_cost_usd_per_day=float(daily) if daily else None,
+        reasoning_effort=effort_for("deploy-risk", "high"),
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
+        lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
     )
     harness = AgentHarness(config=config, api_key=api_key)
 
@@ -274,7 +278,11 @@ def settle_deploy(
         return DeploySettlement("HOLD", result.gate_reason or result.reasoning, 1, note=note)
 
     result.data.pop("recommendation", None)  # the model is not the gate
-    recommendation, reason = deploy_recommendation(ctx, result.data)
+    try:
+        validate_deploy_evidence(result.data)
+        recommendation, reason = deploy_recommendation(ctx, result.data)
+    except EvidenceError as exc:
+        recommendation, reason = "HOLD", str(exc)
     result.data["recommendation"] = recommendation
     result.data["recommendation_reason"] = reason
     life.submit_decision(recommendation, require_human=recommendation in _HUMAN_RECOMMENDATIONS)

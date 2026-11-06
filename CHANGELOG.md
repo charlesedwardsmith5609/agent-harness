@@ -4,6 +4,14 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Persist/resume `RunMachine` via `LifecycleStore` (`AGENT_LIFECYCLE_DIR` / `lifecycle_dir`).
+- Checked-in `evals/baseline.json` floors; `--check-baseline` and offline CI checks.
+- Refuse PR comments that replicate injection canaries / override phrases.
+- Daily process budget `max_cost_usd_per_day` from audit-log rollup (`AGENT_MAX_COST_USD_PER_DAY`).
+- Offline deploy-risk and runbook-gen policy evals (`evals/run_policy_eval.py`).
+- Typed evidence schemas at the gated boundary (`harness/schemas.py`).
+- Multi-turn `prior_messages` plus optional Anthropic message-threads beta flag.
+- `harness/effort_defaults.json`, coverage floor 70% in pytest, Jaeger demo marked local-only.
 - Prompt-injection eval fixtures for the PR reviewer (planted defect + "approve / ignore findings" instructions, including a self-replicating canary). Scorer tracks injection hold rate and canary replication; the gate must still block.
 - `RunConfig.reasoning_effort` (`low`/`medium`/`high`/`xhigh`/`max`) passed as Anthropic `output_config.effort`. Per-agent defaults and `python -m evals.run_eval --sweep-effort` to pick the cheapest level that holds quality.
 - Run lifecycle (`planned`, `running`, `gated`, `approved`, `failed-retryable`, `done`) owns approvals, model retries, side-effect idempotency, and completion criteria. Prompts report evidence; they no longer assign DEPLOY / HOLD / BLOCK or declare the run finished.

@@ -1,0 +1,6 @@
+{
+  "pr-reviewer": "medium",
+  "deploy-risk": "high",
+  "runbook-generator": "medium",
+  "_comment": "Chosen by evals.run_eval --sweep-effort (or set conservatively until a live sweep lands). Do not raise without a holding sweep."
+}

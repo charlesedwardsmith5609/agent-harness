@@ -23,7 +23,9 @@ import sys
 from dataclasses import dataclass, field
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.defaults import effort_for
 from harness.lifecycle import CompletionCriteria, Phase
+from harness.schemas import EvidenceError, validate_runbook_evidence
 
 SYSTEM_PROMPT = """\
 You are a senior site reliability engineer writing a runbook entry based on an incident report.
@@ -164,15 +166,17 @@ def generate_runbook(
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
+    daily = os.environ.get("AGENT_MAX_COST_USD_PER_DAY", "").strip()
     config = RunConfig(
         agent_name="runbook-generator",
         model="claude-sonnet-5-5",
         max_tokens=3000,
         min_confidence=0.60,
         max_cost_usd=0.50,
-        # Medium: drafting is less brittle than a merge/deploy gate; sweep before dropping to low.
-        reasoning_effort="medium",
+        max_cost_usd_per_day=float(daily) if daily else None,
+        reasoning_effort=effort_for("runbook-generator"),
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
+        lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
     )
     harness = AgentHarness(config=config, api_key=api_key)
 
@@ -217,7 +221,11 @@ def settle_runbook(result: AgentResult) -> None:
     life = result.lifecycle
     if life is None or life.phase != Phase.GATED:
         return
-    reason = runbook_is_complete(result.data)
+    try:
+        validate_runbook_evidence(result.data)
+        reason = runbook_is_complete(result.data)
+    except EvidenceError as exc:
+        reason = str(exc)
     if reason or not result.gate_passed:
         life.submit_decision("HOLD", require_human=True)
         life.close(reason or result.gate_reason or "runbook incomplete")

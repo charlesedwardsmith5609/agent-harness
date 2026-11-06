@@ -1,0 +1,23 @@
+{
+  "id": "03-migration-medium",
+  "expected_recommendation": "DEPLOY_WITH_CAUTION",
+  "context": {
+    "service": "payments-api",
+    "environment": "production",
+    "diff_summary": "Add nullable column",
+    "files_changed": ["migrations/001.sql"],
+    "lines_added": 20,
+    "lines_deleted": 0,
+    "has_db_migration": true,
+    "recent_incident": false,
+    "in_freeze_window": false,
+    "hour_utc": 4
+  },
+  "evidence": {
+    "confidence": 0.85,
+    "reasoning": "migration present",
+    "risk_level": "MEDIUM",
+    "rollback_confidence": "MEDIUM",
+    "risk_factors": [{"factor": "database migration", "severity": "MEDIUM", "detail": "schema change"}]
+  }
+}

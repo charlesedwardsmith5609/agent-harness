@@ -306,6 +306,7 @@ class RunMachine:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize everything needed to resume after a crash, including retry pointers."""
         approval = None
         if self.approval is not None:
             approval = {
@@ -313,7 +314,14 @@ class RunMachine:
                 "decision": self.approval.decision,
                 "note": self.approval.note,
             }
+        effect_retry = None
+        if self._effect_retry is not None:
+            effect_retry = {"name": self._effect_retry[0], "key": self._effect_retry[1]}
         return {
+            "run_id": self.run_id,
+            "agent_name": self.agent_name,
+            "max_attempts": self.max_attempts,
+            "max_effect_attempts": self.max_effect_attempts,
             "phase": self.phase.value,
             "outcome": self.outcome,
             "decision": self.decision,
@@ -321,5 +329,43 @@ class RunMachine:
             "model_attempt": self.model_attempt,
             "approval": approval,
             "effects": dict(self.effects),
+            "effect_attempts": dict(self.effect_attempts),
             "history": list(self.history),
+            "retry_to": self._retry_to.value,
+            "effect_retry": effect_retry,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RunMachine:
+        """Rebuild a machine from a persisted snapshot. Refuses unknown phases."""
+        phase = Phase(data["phase"])
+        approval = None
+        raw_approval = data.get("approval")
+        if isinstance(raw_approval, dict) and raw_approval.get("actor"):
+            approval = Approval(
+                actor=str(raw_approval["actor"]),
+                decision=str(raw_approval.get("decision", "")),
+                note=str(raw_approval.get("note", "")),
+            )
+        effect_retry = None
+        raw_retry = data.get("effect_retry")
+        if isinstance(raw_retry, dict) and raw_retry.get("name") and raw_retry.get("key"):
+            effect_retry = (str(raw_retry["name"]), str(raw_retry["key"]))
+        machine = cls(
+            run_id=str(data["run_id"]),
+            agent_name=str(data["agent_name"]),
+            max_attempts=int(data.get("max_attempts", 2)),
+            max_effect_attempts=int(data.get("max_effect_attempts", 2)),
+            phase=phase,
+            outcome=str(data.get("outcome", "")),
+            decision=str(data.get("decision", "")),
+            require_human=bool(data.get("require_human", False)),
+            model_attempt=int(data.get("model_attempt", 0)),
+            approval=approval,
+            effects={str(k): str(v) for k, v in dict(data.get("effects") or {}).items()},
+            effect_attempts={str(k): int(v) for k, v in dict(data.get("effect_attempts") or {}).items()},
+            history=list(data.get("history") or []),
+            _retry_to=Phase(data["retry_to"]) if data.get("retry_to") else Phase.RUNNING,
+            _effect_retry=effect_retry,
+        )
+        return machine

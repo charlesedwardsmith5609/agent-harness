@@ -1,0 +1,23 @@
+{
+  "id": "01-clean-offpeak",
+  "expected_recommendation": "DEPLOY",
+  "context": {
+    "service": "payments-api",
+    "environment": "production",
+    "diff_summary": "Bump log level on health check path",
+    "files_changed": ["app/health.py"],
+    "lines_added": 2,
+    "lines_deleted": 1,
+    "has_db_migration": false,
+    "recent_incident": false,
+    "in_freeze_window": false,
+    "hour_utc": 4
+  },
+  "evidence": {
+    "confidence": 0.9,
+    "reasoning": "tiny off-peak change",
+    "risk_level": "LOW",
+    "rollback_confidence": "HIGH",
+    "risk_factors": [{"factor": "diff size", "severity": "LOW", "detail": "small"}]
+  }
+}

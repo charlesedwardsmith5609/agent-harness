@@ -1,0 +1,16 @@
+{
+  "id": "02-incomplete",
+  "expected_decision": "HOLD",
+  "expected_phase": "done",
+  "expected_outcome": "blocked",
+  "evidence": {
+    "confidence": 0.99,
+    "reasoning": "model claims done",
+    "done": true,
+    "runbook": {
+      "title": "Payments retry storm",
+      "service": "payments-api",
+      "severity": "P2"
+    }
+  }
+}

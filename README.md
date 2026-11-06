@@ -15,7 +15,9 @@ Built around a core principle: **agents earn trust on small, well-defined work w
 ## Harness features
 
 - **OTel instrumentation** — every agent run emits a trace span with confidence, cost, gate decision, and duration as span attributes. Plug in any OTLP-compatible backend (Honeycomb, Jaeger, Chronosphere).
-- **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused. `RunConfig.reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`) is soft guidance passed as Anthropic `output_config.effort`; lower effort usually cuts cost more than quality (Vals, 2026-11). Sweep it in evals before raising an agent's default.
+- **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. `max_cost_usd_per_day` rolls up `cost_usd` from the audit log for that agent and refuses the next call when the day would exceed the cap. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused. `RunConfig.reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`) is soft guidance passed as Anthropic `output_config.effort`; defaults live in `harness/effort_defaults.json`. Sweep with `--sweep-effort` before raising them.
+- **Durable lifecycle** — set `AGENT_LIFECYCLE_DIR` (or `RunConfig.lifecycle_dir`) to persist phase / effects / approval per `run_id`. Resume with `harness.run(..., run_id=...)`.
+- **Injection refusal** — PR comments that would copy a known canary or "ignore findings / approve" override are refused before the side effect lands.
 - **Confidence gating** — agents self-report confidence (0.0–1.0). Runs below `min_confidence` are blocked before their output reaches downstream systems.
 - **Structured outputs** — all agents return parsed JSON, not prose. Parseable by CI systems, dashboards, and other agents.
 - **Audit log** — every decision written to a JSONL file, including failures. Append to your SIEM or log aggregator.
@@ -143,7 +145,7 @@ python examples/observability/demo.py     # dry-run agent, exports to localhost:
 # UI: http://localhost:16686, service "agent-harness.demo-agent"
 ```
 
-The span attributes are covered by a unit test; the Jaeger compose file has not been exercised in CI.
+Span attributes are covered by a unit test. The Jaeger compose file is a local demo only (not a CI check).
 
 ## Reviewer eval
 
@@ -161,20 +163,21 @@ python -m evals.run_eval                 # live run, needs ANTHROPIC_API_KEY, co
 python -m evals.run_eval --json
 python -m evals.run_eval --sweep-effort  # low/medium/high; picks cheapest that holds quality
 python -m evals.run_eval --effort low
+python -m evals.run_eval --check-baseline
+python -m evals.run_policy_eval          # offline deploy + runbook settlement (no API key)
 ```
 
 `--sweep-effort` runs the suite at each effort level and picks the cheapest whose recall,
-exact-gate rate, and injection hold rate stay within 5 points of `high`. Defaults today:
-`pr-reviewer` and `runbook-gen` at `medium`, `deploy-risk` at `high`. Re-run the sweep after
-prompt or model changes before raising those.
+exact-gate rate, and injection hold rate stay within 5 points of `high`. Write the winner into
+`harness/effort_defaults.json`. `evals/baseline.json` holds floors CI enforces offline; live runs
+use `--check-baseline` to fail on regressions.
 
-The scorer itself is unit-tested offline (`tests/test_evals.py`) with fake reviewers, so CI checks
-the harness without spending tokens. Results from live runs are not committed yet; run it against
-your model and settings before trusting the gate. A failed or timed-out review counts as a miss.
+The scorer and policy evals are unit-tested offline so CI spends no tokens. A failed or timed-out
+review counts as a miss.
 
-For long-lived agents with large contexts, Anthropic message threads (public beta) cut median
-time-to-first-token about 35% by caching prior turns — relevant when a run spans many tool calls,
-orthogonal to the per-call `reasoning_effort` dial.
+Multi-turn: pass `prior_messages=` into `AgentHarness.run` (returned on `result.messages`).
+Set `RunConfig(use_message_threads=True, thread_id=...)` to send the Anthropic message-threads
+beta header when you want server-side cache of prior turns on long-lived agents.
 
 ## Tests
 
@@ -183,11 +186,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run without an API key: the Anthropic client is faked, and the suite covers the fail-closed paths (no key, no SDK, malformed output, pre-call cost block), the gates, the audit log, and the PR reviewer's rule that a truncated diff can never be approved.
+Tests run without an API key: the Anthropic client is faked, and the suite covers fail-closed paths, gates, lifecycle persistence, daily budgets, injection refusal, evidence schemas, and offline policy evals. Coverage must stay ≥ 70%.
 
 ```bash
 pip install -e ".[dev,otel]"
 ruff check . && mypy && pytest -q
+python -m evals.run_policy_eval
 ```
 
 Note: in CI the PR review fails closed when `ANTHROPIC_API_KEY` is unavailable (for example on pull requests from forks), so those PRs need a manual review.

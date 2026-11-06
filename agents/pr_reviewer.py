@@ -24,7 +24,10 @@ import sys
 
 # Allow running from repo root
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.defaults import effort_for
+from harness.injection import InjectionReplicationError, refuse_if_replicated
 from harness.lifecycle import CompletionCriteria, Phase
+from harness.schemas import EvidenceError, validate_review_evidence
 
 SYSTEM_PROMPT = """\
 You are a production platform reliability and security engineer reviewing a pull request diff.
@@ -187,7 +190,11 @@ def settle_review(result: AgentResult, *, truncated: bool) -> None:
     if life is None or life.phase != Phase.GATED:
         return
     result.data.pop("gate_decision", None)  # the model is not the gate
-    decision, reason = pr_decision(result.data.get("findings"), truncated=truncated)
+    try:
+        validate_review_evidence(result.data)
+        decision, reason = pr_decision(result.data.get("findings"), truncated=truncated)
+    except EvidenceError as exc:
+        decision, reason = "BLOCK", str(exc)
     result.data["gate_decision"] = decision
     result.data["gate_policy_reason"] = reason
     if truncated:
@@ -264,10 +271,10 @@ def review_diff(
             max_tokens=2048,
             min_confidence=0.65,
             max_cost_usd=0.30,
-            # Medium: Vals finds lower effort often holds quality at far less cost; sweep with
-            # `python -m evals.run_eval --sweep-effort` before raising this.
-            reasoning_effort="medium",
+            max_cost_usd_per_day=_env_float("AGENT_MAX_COST_USD_PER_DAY"),
+            reasoning_effort=effort_for("pr-reviewer"),
             audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
+            lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
         )
         harness = AgentHarness(config=config, api_key=api_key)
 
@@ -286,7 +293,16 @@ def review_diff(
     )
     # The policy owns the gate. A partial diff cannot approve: unseen code is not reviewed.
     settle_review(result, truncated=truncated)
+    if harness is not None and result.lifecycle is not None:
+        harness.save_lifecycle(result.lifecycle)
     return result
+
+
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    return float(raw)
 
 
 def review_pr(
@@ -319,8 +335,17 @@ def review_pr(
     if post_comment and token:
         comment = format_github_comment(result, pr_number)
         # Delivery of the decided review. One comment per PR; a retry reuses this key.
+        # Refuse if the body would replicate a planted injection (Datadog copy step).
         key = f"{repo}#{pr_number}"
         life = result.lifecycle
+        try:
+            refuse_if_replicated(comment)
+        except InjectionReplicationError as exc:
+            result.data["comment_blocked"] = str(exc)
+            if life is not None and life.phase.value != "done":
+                # Keep the gate decision; only the side effect is refused.
+                result.data["comment_blocked"] = str(exc)
+            return result
         if life is not None and life.perform_effect("pr-comment", key, mutating=False):
             post_pr_comment(pr_number=pr_number, repo=repo, token=token, body=comment)
             life.commit_effect("pr-comment", key, mutating=False)

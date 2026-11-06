@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from evals.check_baseline import load_baseline, regressions
+
 CASES_DIR = Path(__file__).parent / "cases"
 BLOCKING = {"BLOCK", "REQUEST_CHANGES"}
 # Cheapest first. A sweep stops at the first level that holds quality vs the dearest.
@@ -171,7 +173,22 @@ if __name__ == "__main__":
         default=None,
         help="Single-run reasoning effort (default: agent config)",
     )
+    ap.add_argument(
+        "--check-baseline",
+        action="store_true",
+        help="Exit non-zero when the summary regresses past evals/baseline.json floors",
+    )
     args = ap.parse_args()
+
+    def _maybe_check(summary: dict[str, float]) -> None:
+        if not args.check_baseline:
+            return
+        problems = regressions(summary, load_baseline())
+        if problems:
+            print("baseline regression:")
+            for problem in problems:
+                print(f"  - {problem}")
+            raise SystemExit(1)
 
     if args.sweep_effort:
         results: dict[str, dict[str, Any]] = {}
@@ -194,6 +211,7 @@ if __name__ == "__main__":
             print(json.dumps(payload, indent=2))
         else:
             print(f"\ncheapest effort that holds quality vs {EFFORT_SWEEP[-1]!r}: {chosen}")
+        _maybe_check(results[chosen]["summary"])
     else:
         rows, summary, mean_cost = run_with_costs(lambda d: _live_review(d, reasoning_effort=args.effort))
         if args.json:
@@ -209,3 +227,4 @@ if __name__ == "__main__":
                 )
             _print_summary(summary)
             print(f"mean_cost_usd={mean_cost:.4f}")
+        _maybe_check(summary)

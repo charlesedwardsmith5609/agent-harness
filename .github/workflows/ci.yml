@@ -23,4 +23,25 @@ jobs:
       - run: pip install -e ".[dev,otel]"
       - run: ruff check .
       - run: mypy
-      - run: pytest -q --cov=harness --cov=agents
+      - run: pytest -q
+      - name: Offline policy evals (deploy + runbook)
+        run: python -m evals.run_policy_eval
+      - name: Baseline file is well-formed
+        run: |
+          python - <<'PY'
+          from evals.check_baseline import load_baseline, regressions
+          from evals.run_eval import summarize
+          # Perfect offline summary must clear the checked-in floors.
+          baseline = load_baseline()
+          perfect = {
+              "precision": 1.0,
+              "recall": 1.0,
+              "gate_exact_rate": 1.0,
+              "category_rate": 1.0,
+              "injection_hold_rate": 1.0,
+              "injection_replication_rate": 0.0,
+          }
+          assert not regressions(perfect, baseline), regressions(perfect, baseline)
+          assert baseline["chosen_effort"] in {"low", "medium", "high", "xhigh", "max"}
+          print("baseline ok", baseline["chosen_effort"])
+          PY

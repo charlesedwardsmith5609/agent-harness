@@ -7,10 +7,10 @@ Evaluates a deployment's risk before it reaches production by analyzing:
   - Deployment timing (peak traffic hours, recent incidents, freeze windows)
   - Rollback confidence (is there a clean rollback path?)
 
-Returns a gated recommendation: DEPLOY / DEPLOY_WITH_CAUTION / HOLD
+Returns evidence the lifecycle turns into DEPLOY / DEPLOY_WITH_CAUTION / HOLD.
+The model does not make that call. A HOLD stays gated until a named person approves it.
 
 Designed to run as a required CI check before any production deployment.
-A HOLD recommendation blocks the deploy pipeline and requires human override.
 """
 
 from __future__ import annotations
@@ -21,12 +21,14 @@ import sys
 from dataclasses import dataclass
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.lifecycle import CompletionCriteria, Phase
 
 SYSTEM_PROMPT = """\
 You are a platform reliability engineer evaluating whether a deployment is safe to proceed.
 
-Your goal is to catch deployments that carry elevated risk BEFORE they affect production users
-and SLO error budgets. When in doubt, recommend HOLD — a delayed deploy costs less than an incident.
+Your goal is to surface risk BEFORE a deployment can affect production users and SLO error
+budgets. Do not recommend DEPLOY, DEPLOY_WITH_CAUTION, or HOLD. Do not decide that the
+deploy is approved or finished. Report risk factors; the harness assigns the recommendation.
 
 You MUST respond with valid JSON only. No prose outside the JSON structure.
 
@@ -34,7 +36,6 @@ Required output schema:
 {
   "confidence": <float 0.0–1.0>,
   "reasoning": <string, 2–4 sentences explaining your risk assessment>,
-  "recommendation": <"DEPLOY" | "DEPLOY_WITH_CAUTION" | "HOLD">,
   "risk_level": <"LOW" | "MEDIUM" | "HIGH" | "CRITICAL">,
   "blast_radius": <"SERVICE_ONLY" | "INTERNAL_USERS" | "EXTERNAL_USERS" | "ALL_USERS">,
   "rollback_confidence": <"HIGH" | "MEDIUM" | "LOW">,
@@ -52,13 +53,6 @@ Required output schema:
     <string — steps that MUST happen before DEPLOY_WITH_CAUTION or DEPLOY is appropriate>
   ]
 }
-
-Recommendation rules:
-  DEPLOY:                All risk factors are LOW. Clean rollback path exists. Off-peak timing.
-  DEPLOY_WITH_CAUTION:   1+ MEDIUM risk factors, or deploying during elevated traffic.
-                         Recommend: staged rollout, enhanced monitoring, engineer on standby.
-  HOLD:                  Any HIGH/CRITICAL risk factor, or multiple MEDIUM factors together,
-                         or recent incident in the same service, or active freeze window.
 
 Risk factors to evaluate:
   - Diff size (large diffs = higher blast radius, harder to review)
@@ -165,13 +159,171 @@ def assess_deploy_risk(
     )
 
 
+_HUMAN_RECOMMENDATIONS = frozenset({"HOLD"})
+_PROCEED = frozenset({"DEPLOY", "DEPLOY_WITH_CAUTION"})
+
+
+def deploy_recommendation(ctx: DeploymentContext, data: dict) -> tuple[str, str]:
+    """Assign DEPLOY / DEPLOY_WITH_CAUTION / HOLD from facts and reported factors.
+
+    The model's recommendation field is not read. Missing or malformed evidence holds.
+    """
+    holds: list[str] = []
+    if ctx.in_freeze_window:
+        holds.append("freeze window")
+    if ctx.recent_incident:
+        holds.append("recent incident")
+
+    factors = data.get("risk_factors")
+    if not isinstance(factors, list):
+        holds.append("risk factors missing")
+        return "HOLD", "; ".join(holds)
+
+    severities: list[str] = []
+    for factor in factors:
+        if not isinstance(factor, dict) or factor.get("severity") not in {"LOW", "MEDIUM", "HIGH"}:
+            return "HOLD", "malformed risk factor"
+        severities.append(factor["severity"])
+
+    risk_level = data.get("risk_level")
+    if "HIGH" in severities or risk_level in {"HIGH", "CRITICAL"}:
+        holds.append("high risk")
+    if sum(severity == "MEDIUM" for severity in severities) >= 2:
+        holds.append("multiple medium factors")
+    if holds:
+        return "HOLD", "; ".join(holds)
+
+    caution: list[str] = []
+    if any(severity == "MEDIUM" for severity in severities):
+        caution.append("medium risk factor")
+    if ctx.peak_traffic():
+        caution.append("peak traffic")
+    if risk_level == "MEDIUM":
+        caution.append("medium risk level")
+    if caution:
+        return "DEPLOY_WITH_CAUTION", "; ".join(caution)
+
+    rollback = data.get("rollback_confidence")
+    if rollback == "MEDIUM":
+        return "DEPLOY_WITH_CAUTION", "rollback confidence is medium"
+    if rollback != "HIGH":
+        return "HOLD", "no clean rollback path"
+    if risk_level != "LOW":
+        return "HOLD", "risk level was not LOW"
+    return "DEPLOY", "all risk factors low"
+
+
+@dataclass
+class DeploySettlement:
+    """What the lifecycle decided, and the process exit code that follows from it."""
+
+    recommendation: str
+    reason: str
+    exit_code: int
+    approved_by: str | None = None
+    note: str = ""
+
+
+_NOT_A_PERSON = frozenset({"model", "agent", "assistant", "system", "llm", "policy"})
+
+
+def _approver_from_env() -> str | None:
+    for var in ("DEPLOY_APPROVER", "GITHUB_ACTOR"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _person(actor: str | None) -> str | None:
+    """A deploy override has to name a person. The model and policy rules do not count."""
+    if not actor or not actor.strip():
+        return None
+    cleaned = actor.strip()
+    if cleaned.split(":", 1)[0].lower() in _NOT_A_PERSON:
+        return None
+    return cleaned
+
+
+def settle_deploy(
+    result: AgentResult,
+    ctx: DeploymentContext,
+    *,
+    allow_caution: bool,
+    override: bool | None = None,
+    approver: str | None = None,
+) -> DeploySettlement:
+    """Apply the deploy policy and finish the lifecycle.
+
+    DEPLOY (and DEPLOY_WITH_CAUTION when the caller allows it) is approved by the
+    policy rule when the confidence and cost gates passed. Anything else can be
+    approved by a named person via DEPLOY_OVERRIDE. A failed run cannot be approved.
+    """
+    if override is None:
+        override = os.environ.get("DEPLOY_OVERRIDE", "").lower() == "true"
+    if approver is None:
+        approver = _approver_from_env()
+
+    life = result.lifecycle
+    if not result.success or life is None or life.phase != Phase.GATED:
+        note = ""
+        if override:
+            note = "DEPLOY_OVERRIDE does not approve a failed run"
+        return DeploySettlement("HOLD", result.gate_reason or result.reasoning, 1, note=note)
+
+    result.data.pop("recommendation", None)  # the model is not the gate
+    recommendation, reason = deploy_recommendation(ctx, result.data)
+    result.data["recommendation"] = recommendation
+    result.data["recommendation_reason"] = reason
+    life.submit_decision(recommendation, require_human=recommendation in _HUMAN_RECOMMENDATIONS)
+
+    proceed = recommendation == "DEPLOY" or (allow_caution and recommendation == "DEPLOY_WITH_CAUTION")
+    if proceed and result.gate_passed and recommendation in _PROCEED:
+        life.approve("policy:deploy-risk", note=f"{recommendation}: {reason}")
+        life.complete(
+            CompletionCriteria(frozenset({recommendation}), require_human=False),
+            gate_passed=True,
+        )
+        return DeploySettlement(recommendation, reason, 0, approved_by="policy:deploy-risk")
+
+    # Anything the policy did not complete (HOLD, a caution the caller will not ship,
+    # a deploy whose confidence or cost gate failed) can still be accepted by a person.
+    if override:
+        person = _person(approver)
+        if person is None:
+            life.close("DEPLOY_OVERRIDE requires DEPLOY_APPROVER or GITHUB_ACTOR to name a person")
+            return DeploySettlement(
+                recommendation,
+                reason,
+                1,
+                note="DEPLOY_OVERRIDE ignored: set DEPLOY_APPROVER or GITHUB_ACTOR to a person",
+            )
+        life.approve(person, note="DEPLOY_OVERRIDE")
+        life.complete(
+            CompletionCriteria(frozenset({recommendation}), require_human=True, require_gate_passed=False),
+            gate_passed=result.gate_passed,
+        )
+        return DeploySettlement(
+            recommendation,
+            reason,
+            0,
+            approved_by=person,
+            note=f"{recommendation} approved by {person} (DEPLOY_OVERRIDE)",
+        )
+
+    life.close(result.gate_reason or reason)
+    return DeploySettlement(recommendation, reason, 1)
+
+
 def format_deploy_output(result: AgentResult) -> str:
     """Format result for CI log output."""
+    phase = result.lifecycle.phase.value if result.lifecycle else "unknown"
     if not result.success:
         return (
             f"[DEPLOY GATE] ❌ Agent failed — defaulting to HOLD\n"
             f"Reason: {result.reasoning}\n"
-            f"Override with: DEPLOY_OVERRIDE=true"
+            f"Lifecycle: {phase}\n"
+            f"A failed run cannot be approved. Fix the failure and re-run."
         )
 
     data = result.data
@@ -181,6 +333,7 @@ def format_deploy_output(result: AgentResult) -> str:
     emoji = {"DEPLOY": "✅", "DEPLOY_WITH_CAUTION": "⚠️", "HOLD": "🚫"}.get(rec, "❓")
     lines = [
         f"[DEPLOY GATE] {emoji} {rec} (risk: {risk})",
+        f"Lifecycle: {phase} ({data.get('recommendation_reason', '')})",
         "",
         f"Assessment: {data.get('reasoning', '')}",
         f"Blast radius: {data.get('blast_radius', 'unknown')}",
@@ -244,13 +397,9 @@ if __name__ == "__main__":
     )
 
     result = assess_deploy_risk(ctx)
+    settled = settle_deploy(result, ctx, allow_caution=False)
     print(format_deploy_output(result))
+    if settled.note:
+        print(f"\n[DEPLOY GATE] {settled.note}")
 
-    rec = result.data.get("recommendation", "HOLD") if result.success else "HOLD"
-    override = os.environ.get("DEPLOY_OVERRIDE", "").lower() == "true"
-
-    if override:
-        print("\n[DEPLOY GATE] ⚠️  DEPLOY_OVERRIDE=true — gate bypassed by human override")
-        sys.exit(0)
-
-    sys.exit(0 if rec == "DEPLOY" else 1)
+    sys.exit(settled.exit_code)

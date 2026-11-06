@@ -7,12 +7,13 @@ Analyses a pull request diff for:
   - Observability gaps (missing tracing, inadequate error logging)
   - SLO impact (changes to critical paths, timeout modifications)
 
-Returns structured findings with severity (HIGH / MEDIUM / LOW / INFO)
-and a gate decision: APPROVE / REQUEST_CHANGES / BLOCK.
+Returns structured findings with severity (HIGH / MEDIUM / LOW / INFO).
+The lifecycle assigns the gate from those severities. The model does not
+approve, block, or decide that the review is finished.
 
 HIGH findings → BLOCK (cannot merge until resolved)
 MEDIUM findings → REQUEST_CHANGES (human review required)
-LOW/INFO → APPROVE with comments
+LOW/INFO, or no findings → APPROVE
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import sys
 
 # Allow running from repo root
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.lifecycle import CompletionCriteria, Phase
 
 SYSTEM_PROMPT = """\
 You are a production platform reliability and security engineer reviewing a pull request diff.
@@ -36,7 +38,6 @@ Required output schema:
 {
   "confidence": <float 0.0–1.0, how confident you are in this review>,
   "reasoning": <string, 1–3 sentence summary of your overall assessment>,
-  "gate_decision": <"APPROVE" | "REQUEST_CHANGES" | "BLOCK">,
   "findings": [
     {
       "severity": <"HIGH" | "MEDIUM" | "LOW" | "INFO">,
@@ -49,17 +50,13 @@ Required output schema:
     }
   ],
   "slo_risk": <"NONE" | "LOW" | "MEDIUM" | "HIGH">,
-  "security_risk": <"NONE" | "LOW" | "MEDIUM" | "HIGH">,
-  "summary_for_pr_comment": <markdown string suitable for posting as a GitHub PR comment>
+  "security_risk": <"NONE" | "LOW" | "MEDIUM" | "HIGH">
 }
 
-Gate decision rules:
-- BLOCK if any finding has severity HIGH
-- REQUEST_CHANGES if any finding has severity MEDIUM and no HIGH
-- APPROVE if all findings are LOW or INFO
-
-Be precise. Only flag real issues, not style preferences. If the diff looks clean, say so with
-confidence and return an empty findings list.
+Do not approve, block, or request changes. Do not decide that the review is complete.
+Report findings only. The harness assigns the gate from severity:
+  HIGH → block, MEDIUM → request changes, LOW or INFO → comment only.
+If the diff looks clean, return an empty findings list. Be precise. Only flag real issues.
 
 Security patterns to check:
   - Hardcoded secrets, API keys, passwords, tokens
@@ -132,6 +129,81 @@ def post_pr_comment(
             raise RuntimeError(f"Failed to post PR comment: {resp.status}")
 
 
+_SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+_HUMAN_GATES = frozenset({"BLOCK", "REQUEST_CHANGES"})
+
+
+def pr_decision(findings: object, *, truncated: bool) -> tuple[str, str]:
+    """Map finding severity to a gate. The model's own gate_decision is ignored.
+
+    A missing findings list is not a clean review. An explicit empty list is.
+    """
+    if findings is None:
+        return "REQUEST_CHANGES", "findings missing"
+    if not isinstance(findings, list):
+        return "BLOCK", "findings were not a list"
+    worst = "INFO"
+    saw_finding = False
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return "BLOCK", "malformed finding"
+        severity = finding.get("severity")
+        if severity not in _SEVERITY_RANK:
+            return "BLOCK", "finding missing severity"
+        saw_finding = True
+        if _SEVERITY_RANK[severity] > _SEVERITY_RANK[worst]:
+            worst = severity
+    if worst == "HIGH":
+        return "BLOCK", "high severity finding"
+    if worst == "MEDIUM":
+        return "REQUEST_CHANGES", "medium severity finding"
+    if truncated:
+        return "REQUEST_CHANGES", "diff truncated"
+    if saw_finding:
+        return "APPROVE", "no blocking findings"
+    return "APPROVE", "no findings"
+
+
+def review_exit_code(result: AgentResult) -> int:
+    """0 only when the lifecycle completed an APPROVE. A prompt cannot produce that."""
+    life = result.lifecycle
+    decision = result.data.get("gate_decision", "")
+    if life is not None and life.phase == Phase.DONE and life.outcome == "completed" and decision == "APPROVE":
+        return 0
+    if decision == "BLOCK":
+        return 2
+    if decision == "REQUEST_CHANGES":
+        return 1
+    return 3
+
+
+def settle_review(result: AgentResult, *, truncated: bool) -> None:
+    """Apply the gate and finish the lifecycle. No-op when the model call already failed."""
+    life = result.lifecycle
+    if life is None or life.phase != Phase.GATED:
+        return
+    result.data.pop("gate_decision", None)  # the model is not the gate
+    decision, reason = pr_decision(result.data.get("findings"), truncated=truncated)
+    result.data["gate_decision"] = decision
+    result.data["gate_policy_reason"] = reason
+    if truncated:
+        result.data["truncated"] = True
+    if reason == "diff truncated":
+        result.data["reasoning"] = (
+            "Diff exceeded the review limit and was truncated; human review of the "
+            "remainder is required. " + str(result.data.get("reasoning", ""))
+        )
+    life.submit_decision(decision, require_human=decision in _HUMAN_GATES)
+    if decision == "APPROVE" and result.gate_passed:
+        life.approve("policy:pr-findings", note=reason)
+        life.complete(
+            CompletionCriteria(frozenset({"APPROVE"}), require_human=False),
+            gate_passed=True,
+        )
+        return
+    life.close(reason or result.gate_reason or "review did not pass")
+
+
 def format_github_comment(result: AgentResult, pr_number: int) -> str:
     """Format the agent result as a GitHub PR comment."""
     if not result.passed():
@@ -148,31 +220,29 @@ def format_github_comment(result: AgentResult, pr_number: int) -> str:
 
     emoji = {"APPROVE": "✅", "REQUEST_CHANGES": "⚠️", "BLOCK": "🚫"}.get(decision, "❓")
 
-    # Use the agent's pre-formatted comment if available
-    if "summary_for_pr_comment" in data:
-        body = data["summary_for_pr_comment"]
+    # The comment is rendered from the lifecycle's decision. A model-written summary is not the gate.
+    lines = [
+        f"## 🤖 Agent PR Review — {emoji} {decision}\n",
+        f"*Confidence: {result.confidence:.0%} · Cost: ${result.cost_usd:.4f} · Run: `{result.run_id}`*\n",
+        f"> {data.get('reasoning', '')}\n",
+    ]
+    if findings:
+        lines.append("\n### Findings\n")
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            severity = finding.get("severity", "")
+            sev_emoji = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "💡", "INFO": "ℹ️"}.get(severity, "•")
+            line_no = f" line {finding['line']}" if finding.get("line") else ""
+            lines.append(
+                f"**{sev_emoji} [{severity}] {finding.get('title', '')}**  \n"
+                f"`{finding.get('file', 'general')}`{line_no}\n"
+                f"{finding.get('description', '')}\n\n"
+                f"*Suggestion:* {finding.get('suggestion', '')}\n"
+            )
     else:
-        lines = [
-            f"## 🤖 Agent PR Review — {emoji} {decision}\n",
-            f"*Confidence: {result.confidence:.0%} · Cost: ${result.cost_usd:.4f} · Run: `{result.run_id}`*\n",
-            f"> {data.get('reasoning', '')}\n",
-        ]
-        if findings:
-            lines.append("\n### Findings\n")
-            for f in findings:
-                sev_emoji = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "💡", "INFO": "ℹ️"}.get(f.get("severity", ""), "•")
-                lines.append(
-                    f"**{sev_emoji} [{f['severity']}] {f['title']}**  \n"
-                    f"`{f.get('file', 'general')}`"
-                    + (f" line {f['line']}" if f.get("line") else "")
-                    + f"\n{f['description']}\n\n"
-                    f"*Suggestion:* {f['suggestion']}\n"
-                )
-        else:
-            lines.append("\n*No issues found. Diff looks clean.*\n")
-        body = "\n".join(lines)
-
-    return body
+        lines.append("\n*No issues found. Diff looks clean.*\n")
+    return "\n".join(lines)
 
 
 def review_diff(
@@ -207,16 +277,8 @@ def review_diff(
         user_message=user_message,
         context={"github.repo": repo, "github.pr_number": pr_number},
     )
-
-    # A review of a partial diff must never approve: unseen code has not been reviewed.
-    if truncated and result.success:
-        result.data["truncated"] = True
-        if result.data.get("gate_decision") == "APPROVE":
-            result.data["gate_decision"] = "REQUEST_CHANGES"
-            result.data["reasoning"] = (
-                "Diff exceeded the review limit and was truncated; human review of the "
-                "remainder is required. " + str(result.data.get("reasoning", ""))
-            )
+    # The policy owns the gate. A partial diff cannot approve: unseen code is not reviewed.
+    settle_review(result, truncated=truncated)
     return result
 
 
@@ -249,7 +311,14 @@ def review_pr(
 
     if post_comment and token:
         comment = format_github_comment(result, pr_number)
-        post_pr_comment(pr_number=pr_number, repo=repo, token=token, body=comment)
+        # Delivery of the decided review. One comment per PR; a retry reuses this key.
+        key = f"{repo}#{pr_number}"
+        life = result.lifecycle
+        if life is not None and life.perform_effect("pr-comment", key, mutating=False):
+            post_pr_comment(pr_number=pr_number, repo=repo, token=token, body=comment)
+            life.commit_effect("pr-comment", key, mutating=False)
+        elif life is None:
+            post_pr_comment(pr_number=pr_number, repo=repo, token=token, body=comment)
 
     return result
 
@@ -271,7 +340,6 @@ if __name__ == "__main__":
 
     print(json.dumps(result.to_dict(), indent=2))
 
-    # Exit code drives CI gate:
-    # 0 = approved, 1 = changes requested, 2 = blocked, 3 = agent failure
-    decision = result.data.get("gate_decision", "") if result.success else ""
-    sys.exit({"APPROVE": 0, "REQUEST_CHANGES": 1, "BLOCK": 2}.get(decision, 3))
+    # Exit code drives CI. 0 only after the lifecycle completes an APPROVE.
+    # 1 = changes requested, 2 = blocked, 3 = agent failure or an approval that did not complete.
+    sys.exit(review_exit_code(result))

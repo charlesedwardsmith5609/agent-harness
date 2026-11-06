@@ -22,6 +22,7 @@ class FakeAnthropic:
 
     instances: list["FakeAnthropic"] = []
     reply = None
+    script: list | None = None  # popped before reply, so a test can fail once then succeed
 
     def __init__(self, api_key=None):
         self.calls = []
@@ -30,12 +31,15 @@ class FakeAnthropic:
 
     def _create(self, **kwargs):
         self.calls.append(kwargs)
+        if FakeAnthropic.script:
+            return FakeAnthropic.script.pop(0)
         return FakeAnthropic.reply
 
 
 @pytest.fixture(autouse=True)
 def fake_sdk(monkeypatch):
     FakeAnthropic.instances = []
+    FakeAnthropic.script = None
     FakeAnthropic.reply = response({"confidence": 0.9, "reasoning": "ok", "x": 1})
     monkeypatch.setattr(agent_mod, "ANTHROPIC_AVAILABLE", True)
     monkeypatch.setattr(agent_mod, "anthropic", SimpleNamespace(Anthropic=FakeAnthropic), raising=False)
@@ -102,6 +106,26 @@ class TestGates:
         assert make().run("s", "u").passed()
 
 
+def test_parse_failure_is_retried_then_succeeds():
+    FakeAnthropic.script = [
+        response("not json"),
+        response({"confidence": 0.9, "reasoning": "recovered"}),
+    ]
+    result = make().run("s", "u")
+    assert result.passed()
+    assert result.lifecycle.model_attempt == 2
+    assert calls() == 2
+    assert any(step["to"] == "failed-retryable" for step in result.lifecycle.history)
+
+
+def test_parse_failure_stops_at_max_attempts():
+    FakeAnthropic.reply = response("not json at all")
+    result = make(max_attempts=2).run("s", "u")
+    assert not result.success and result.lifecycle.outcome == "failed"
+    assert result.lifecycle.phase.value == "done"
+    assert calls() == 2
+
+
 def test_audit_log_written_for_pass_and_fail(tmp_path):
     log = tmp_path / "audit.jsonl"
     make(audit_log_path=str(log)).run("s", "u")
@@ -109,28 +133,53 @@ def test_audit_log_written_for_pass_and_fail(tmp_path):
     records = [json.loads(line) for line in log.read_text().splitlines()]
     assert [r["gate_passed"] for r in records] == [True, False]
     assert all("timestamp" in r for r in records)
+    assert records[0]["lifecycle"]["phase"] == "gated"
+    assert records[1]["lifecycle"]["phase"] == "done"
+    assert records[1]["lifecycle"]["outcome"] == "failed"
+    assert "failed-retryable" not in {step["to"] for step in records[1]["lifecycle"]["history"]}
 
 
 class TestPrReviewer:
     """The CI gate: exit-code mapping and the rule that a partial diff never approves."""
 
-    def _run(self, monkeypatch, diff, decision):
+    def _run(self, monkeypatch, diff, decision, findings=None):
         from agents import pr_reviewer
 
-        FakeAnthropic.reply = response({"confidence": 0.9, "reasoning": "r", "gate_decision": decision, "findings": []})
+        FakeAnthropic.reply = response(
+            {"confidence": 0.9, "reasoning": "r", "gate_decision": decision, "findings": findings or []}
+        )
         monkeypatch.setattr(pr_reviewer, "fetch_pr_diff", lambda **kw: diff)
         return pr_reviewer.review_pr(1, "o/r", token="", api_key="k", post_comment=False)
 
     def test_small_diff_keeps_approval(self, monkeypatch):
         r = self._run(monkeypatch, "diff --git a b", "APPROVE")
         assert r.data["gate_decision"] == "APPROVE" and "truncated" not in r.data
+        assert r.lifecycle.outcome == "completed"
+        assert r.lifecycle.approval.actor == "policy:pr-findings"
+
+    def test_model_block_without_findings_does_not_block(self, monkeypatch):
+        r = self._run(monkeypatch, "diff --git a b", "BLOCK")
+        assert r.data["gate_decision"] == "APPROVE"
+        assert r.lifecycle.decision == "APPROVE"
+        assert r.lifecycle.outcome == "completed"
+
+    def test_high_finding_blocks_even_if_the_model_approves(self, monkeypatch):
+        r = self._run(monkeypatch, "diff --git a b", "APPROVE", findings=[{"severity": "HIGH", "title": "key"}])
+        assert r.data["gate_decision"] == "BLOCK"
+        assert r.lifecycle.outcome == "blocked"
+        assert r.lifecycle.approval is None
 
     def test_truncated_diff_cannot_approve(self, monkeypatch):
         r = self._run(monkeypatch, "x" * 50_000, "APPROVE")
         assert r.data["gate_decision"] == "REQUEST_CHANGES" and r.data["truncated"] is True
 
     def test_truncated_diff_keeps_block(self, monkeypatch):
-        r = self._run(monkeypatch, "x" * 50_000, "BLOCK")
+        r = self._run(
+            monkeypatch,
+            "x" * 50_000,
+            "APPROVE",
+            findings=[{"severity": "HIGH", "title": "key"}],
+        )
         assert r.data["gate_decision"] == "BLOCK"
 
     def test_comment_for_failed_gate_demands_manual_review(self):
@@ -160,4 +209,5 @@ def test_run_emits_span_with_cost_and_gate_attributes():
     harness._tracer = provider.get_tracer("span-test")
     harness.run("Return JSON.", "task")
     attrs = exporter.get_finished_spans()[0].attributes
-    assert {"agent.cost_usd", "agent.gate_passed", "agent.confidence"} <= set(attrs)
+    assert {"agent.cost_usd", "agent.gate_passed", "agent.confidence", "agent.phase"} <= set(attrs)
+    assert attrs["agent.phase"] == "gated"

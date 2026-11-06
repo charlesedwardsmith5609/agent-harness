@@ -23,6 +23,7 @@ import sys
 from dataclasses import dataclass, field
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
+from harness.lifecycle import CompletionCriteria, Phase
 
 SYSTEM_PROMPT = """\
 You are a senior site reliability engineer writing a runbook entry based on an incident report.
@@ -33,11 +34,14 @@ to diagnose and resolve a repeat of this incident — without needing to underst
 Be specific. Use exact command syntax. Include expected outputs so the engineer knows if
 the command worked. Prefer commands over UI instructions wherever possible.
 
+Do not decide that the runbook is ready to commit. The harness marks it complete only
+when title, service, and at least one diagnosis or remediation step are present.
+
 You MUST respond with valid JSON only. No prose outside the JSON structure.
 
 Required output schema:
 {
-  "confidence": <float 0.0–1.0, how complete and actionable this runbook is>,
+  "confidence": <float 0.0–1.0, how confident you are in the steps you wrote>,
   "reasoning": <string, brief note on what information was available and any gaps>,
   "runbook": {
     "title": <string>,
@@ -181,12 +185,72 @@ def generate_runbook(
     )
 
 
+def runbook_is_complete(data: dict) -> str | None:
+    """Return a refusal reason, or None when the entry meets the completion criteria.
+
+    Confidence and any "done" field from the model are not consulted.
+    """
+    runbook = data.get("runbook")
+    if not isinstance(runbook, dict):
+        return "runbook object missing"
+    if not str(runbook.get("title") or "").strip():
+        return "runbook title missing"
+    if not str(runbook.get("service") or "").strip():
+        return "runbook service missing"
+    diagnosis = runbook.get("diagnosis_steps") or []
+    remediation = runbook.get("remediation") or []
+    if not isinstance(diagnosis, list) or not isinstance(remediation, list):
+        return "diagnosis_steps and remediation must be lists"
+    if len(diagnosis) + len(remediation) < 1:
+        return "runbook needs a diagnosis step or a remediation step"
+    return None
+
+
+def settle_runbook(result: AgentResult) -> None:
+    """Approve a structurally complete runbook, or close the run as blocked.
+
+    Leaves an approved run in `approved` so the caller can write the file
+    (a mutating effect) before completing.
+    """
+    life = result.lifecycle
+    if life is None or life.phase != Phase.GATED:
+        return
+    reason = runbook_is_complete(result.data)
+    if reason or not result.gate_passed:
+        life.submit_decision("HOLD", require_human=True)
+        life.close(reason or result.gate_reason or "runbook incomplete")
+        return
+    life.submit_decision("WRITE", require_human=False)
+    life.approve("policy:runbook-sections", note="required sections present")
+
+
+def finish_runbook(result: AgentResult) -> None:
+    """Complete an approved runbook. Refuses when the completion criteria do not hold."""
+    life = result.lifecycle
+    if life is None or life.phase != Phase.APPROVED:
+        return
+    life.complete(CompletionCriteria(frozenset({"WRITE"}), require_human=False), gate_passed=True)
+
+
+def _runbook_accepted(result: AgentResult) -> bool:
+    """True once the lifecycle has approved the entry or completed it. Confidence is not enough."""
+    life = result.lifecycle
+    if life is None:
+        return result.passed()
+    if life.phase == Phase.APPROVED:
+        return True
+    return life.phase == Phase.DONE and life.outcome == "completed"
+
+
 def render_markdown(result: AgentResult) -> str:
     """Render the runbook as Markdown suitable for committing to a docs repo."""
-    if not result.passed():
+    if not _runbook_accepted(result):
+        reason = result.gate_reason or result.reasoning
+        if result.lifecycle and result.lifecycle.history:
+            reason = str(result.lifecycle.history[-1].get("reason") or reason)
         return (
             f"# Runbook generation failed\n\n"
-            f"**Reason:** {result.gate_reason or result.reasoning}\n\n"
+            f"**Reason:** {reason}\n\n"
             f"Please write this runbook manually based on the incident report.\n"
         )
 
@@ -298,13 +362,29 @@ if __name__ == "__main__":
     incident = IncidentReport(**data)
 
     result = generate_runbook(incident)
-
+    settle_runbook(result)
     md = render_markdown(result)
+
+    life = result.lifecycle
+    if life is None or life.phase != Phase.APPROVED:
+        print(md)
+        sys.exit(1)
     if args.output_md:
-        with open(args.output_md, "w") as f:
-            f.write(md)
-        print(f"Runbook written to {args.output_md}")
+        key = incident.incident_id.strip()
+        if not key:
+            print("incident_id is required as the idempotency key for the runbook write")
+            sys.exit(1)
+        try:
+            if life.perform_effect("write-runbook", key, mutating=True):
+                with open(args.output_md, "w") as handle:
+                    handle.write(md)
+                life.commit_effect("write-runbook", key, mutating=True)
+                print(f"Runbook written to {args.output_md}")
+        except OSError as exc:
+            life.fail_effect("write-runbook", key, str(exc))
+            print(md)
+            sys.exit(1)
     else:
         print(md)
-
-    sys.exit(0 if result.passed() else 1)
+    finish_runbook(result)
+    sys.exit(0 if life.phase == Phase.DONE and life.outcome == "completed" else 1)

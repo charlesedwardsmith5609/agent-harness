@@ -87,22 +87,35 @@ env:
 Each run emits a span with attributes:
 - `agent.name`, `agent.run_id`, `agent.model`
 - `agent.confidence`, `agent.cost_usd`, `agent.duration_s`
-- `agent.gate_passed`, domain-specific attributes (e.g. `github.pr_number`)
+- `agent.gate_passed`, `agent.phase`, `agent.model_attempts`
+- domain-specific attributes (e.g. `github.pr_number`)
 
 ## Trust model
 
-The harness implements a simple but explicit trust model:
+Prompts report evidence. A run lifecycle owns approvals, retries, and completion. The model cannot approve its own output, retry a side effect, or declare the work finished.
 
 ```
-agent call → parse JSON → confidence gate → cost gate → caller
-                                                ↓
-                                          audit log (always)
-                                          OTel span (always)
+planned → running → gated → approved → done
+             ↑        │        │
+             └─ failed-retryable ←┘
 ```
 
-If any step fails, the result has `gate_passed=False` and `passed()` returns `False`. Callers should treat `passed() == False` as a blocking condition, not a warning.
+A model-call retry returns to `running`. A side-effect retry returns to `approved` and must present the same idempotency key.
 
-The `DEPLOY_OVERRIDE=true` environment variable provides a human escape hatch for the deploy gate — but it's logged in the audit trail.
+| State | What it means |
+|-------|----------------|
+| `planned` | Run accepted, model not called |
+| `running` | Side-effect-free model call in progress |
+| `gated` | Evidence is in. Policy assigns DEPLOY / HOLD / BLOCK from it |
+| `approved` | A policy rule or a named person accepted that decision |
+| `failed-retryable` | Transient failure. Retry is a transition, with a bound |
+| `done` | Completion criteria passed (`completed`), the gate was not approved (`blocked`), or the run failed (`failed`) |
+
+Confidence and cost gates still run inside the harness. `passed()` is that check only. A deploy or a merge exits 0 only when the lifecycle reaches `done` with outcome `completed`.
+
+Retries of the model call stay in the lifecycle and never repeat a side effect. Writing a runbook or posting a review comment requires an idempotency key (incident id, `repo#pr`). A second attempt with a different key is refused; the same key is a no-op once it has landed.
+
+`DEPLOY_OVERRIDE=true` is an approval transition for a gate the policy did not complete. It counts only when `DEPLOY_APPROVER` or `GITHUB_ACTOR` names a person. It does not approve a failed run.
 
 ## AI philosophy
 

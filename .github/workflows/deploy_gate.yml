@@ -81,7 +81,12 @@ jobs:
           python - <<'EOF'
           import os, sys, json, datetime
           sys.path.insert(0, '.')
-          from agents.deploy_risk import DeploymentContext, assess_deploy_risk, format_deploy_output
+          from agents.deploy_risk import (
+              DeploymentContext,
+              assess_deploy_risk,
+              format_deploy_output,
+              settle_deploy,
+          )
 
           # Build context from workflow inputs
           ctx = DeploymentContext(
@@ -97,23 +102,19 @@ jobs:
           )
 
           result = assess_deploy_risk(ctx)
-          output = format_deploy_output(result)
-          print(output)
+          settled = settle_deploy(result, ctx, allow_caution=True)
+          print(format_deploy_output(result))
+          if settled.note:
+              print(settled.note)
 
-          rec  = result.data.get("recommendation", "HOLD") if result.success else "HOLD"
-          risk = result.data.get("risk_level", "UNKNOWN")  if result.success else "UNKNOWN"
+          rec = settled.recommendation
+          risk = result.data.get("risk_level", "UNKNOWN") if result.success else "UNKNOWN"
 
-          # Write GitHub outputs
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"recommendation={rec}\n")
               f.write(f"risk_level={risk}\n")
 
-          # Check for human override
-          if os.environ.get("DEPLOY_OVERRIDE", "").lower() == "true":
-              print("\n⚠️  DEPLOY_OVERRIDE=true — gate bypassed")
-              sys.exit(0)
-
-          sys.exit(0 if rec in ("DEPLOY", "DEPLOY_WITH_CAUTION") else 1)
+          sys.exit(settled.exit_code)
           EOF
 
       - name: Upload gate audit log

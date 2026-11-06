@@ -23,6 +23,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from harness.lifecycle import ModelOutputError, Phase, RunMachine, is_model_retryable
+
 try:
     import anthropic
 
@@ -73,12 +75,16 @@ class AgentResult:
     model: str
     gate_passed: bool = True  # Set by gate evaluation
     gate_reason: str = ""
+    lifecycle: RunMachine | None = None  # Authoritative phase; not decided by the model
 
     def passed(self) -> bool:
         return self.success and self.gate_passed
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items()}
+        data = {k: v for k, v in self.__dict__.items() if k != "lifecycle"}
+        if self.lifecycle is not None:
+            data["lifecycle"] = self.lifecycle.to_dict()
+        return data
 
 
 @dataclass
@@ -95,6 +101,7 @@ class RunConfig:
     price_per_m_input: float | None = None  # Override MODEL_PRICES (USD / 1M tokens)
     price_per_m_output: float | None = None
     dry_run: bool = False  # Canned response, no API call. Never a real pass.
+    max_attempts: int = 2  # Model-call attempts. Side effects are not retried here.
 
 
 # ── OTel setup ────────────────────────────────────────────────────────────────
@@ -157,6 +164,12 @@ class AgentHarness:
         """
         run_id = str(uuid.uuid4())[:8]
         start = time.monotonic()
+        machine = RunMachine(
+            run_id=run_id,
+            agent_name=self.config.agent_name,
+            max_attempts=self.config.max_attempts,
+        )
+        machine.start()
 
         span_ctx = (
             self._tracer.start_as_current_span(
@@ -173,58 +186,90 @@ class AgentHarness:
         )
 
         with span_ctx as span:
-            try:
-                raw, input_tok, output_tok = self._call_api(system_prompt, user_message)
-                data, confidence, reasoning = self._parse_response(raw)
-                cost = self._calculate_cost(input_tok, output_tok)
-                dur = time.monotonic() - start
+            total_in = 0
+            total_out = 0
+            total_cost = 0.0
+            result: AgentResult | None = None
+            while machine.phase == Phase.RUNNING:
+                try:
+                    raw, input_tok, output_tok = self._call_api(system_prompt, user_message)
+                    total_in += input_tok
+                    total_out += output_tok
+                    total_cost += self._calculate_cost(input_tok, output_tok)
+                    data, confidence, reasoning = self._parse_response(raw)
+                    dur = time.monotonic() - start
 
-                result = AgentResult(
-                    agent_name=self.config.agent_name,
-                    run_id=run_id,
-                    success=True,
-                    data=data,
-                    confidence=confidence,
-                    reasoning=reasoning,
-                    cost_usd=cost,
-                    duration_s=dur,
-                    input_tokens=input_tok,
-                    output_tokens=output_tok,
-                    model=self.config.model,
-                )
+                    result = AgentResult(
+                        agent_name=self.config.agent_name,
+                        run_id=run_id,
+                        success=True,
+                        data=data,
+                        confidence=confidence,
+                        reasoning=reasoning,
+                        cost_usd=total_cost,
+                        duration_s=dur,
+                        input_tokens=total_in,
+                        output_tokens=total_out,
+                        model=self.config.model,
+                        lifecycle=machine,
+                    )
+                    result = self._evaluate_gates(result)
+                    if self.config.dry_run:
+                        result.gate_passed = False
+                        result.gate_reason = "Dry run: no API call was made"
+                    machine.succeed()  # running → gated. Domain policy decides what happens next.
+                except Exception as exc:
+                    spent_another = False
+                    try:
+                        spent_another = total_cost + self._worst_case_cost(system_prompt, user_message) > (
+                            self.config.max_cost_usd
+                        )
+                    except RuntimeError:
+                        spent_another = False
+                    retryable = is_model_retryable(exc) and not self.config.dry_run and not spent_another
+                    machine.fail_model(str(exc), retryable=retryable)
+                    if machine.phase == Phase.FAILED_RETRYABLE:
+                        logger.warning(
+                            "Agent %s run %s attempt %s failed (%s); retrying model call",
+                            self.config.agent_name,
+                            run_id,
+                            machine.model_attempt,
+                            exc,
+                        )
+                        if hasattr(span, "record_exception"):
+                            span.record_exception(exc)
+                        machine.retry()
+                        continue
+                    dur = time.monotonic() - start
+                    logger.exception("Agent %s run %s failed", self.config.agent_name, run_id)
+                    if hasattr(span, "record_exception"):
+                        span.record_exception(exc)
+                    result = AgentResult(
+                        agent_name=self.config.agent_name,
+                        run_id=run_id,
+                        success=False,
+                        data={},
+                        confidence=0.0,
+                        reasoning=str(exc),
+                        cost_usd=total_cost,
+                        duration_s=dur,
+                        input_tokens=total_in,
+                        output_tokens=total_out,
+                        model=self.config.model,
+                        gate_passed=False,
+                        gate_reason=f"Agent execution failed: {exc}",
+                        lifecycle=machine,
+                    )
 
-                # Trust gate evaluation
-                result = self._evaluate_gates(result)
-                if self.config.dry_run:
-                    result.gate_passed = False
-                    result.gate_reason = "Dry run: no API call was made"
-
-                if hasattr(span, "set_attribute"):
-                    span.set_attribute("agent.confidence", confidence)
-                    span.set_attribute("agent.cost_usd", cost)
-                    span.set_attribute("agent.gate_passed", result.gate_passed)
-                    span.set_attribute("agent.duration_s", dur)
-
-            except Exception as exc:
-                dur = time.monotonic() - start
-                logger.exception("Agent %s run %s failed", self.config.agent_name, run_id)
-                if hasattr(span, "record_exception"):
-                    span.record_exception(exc)
-                result = AgentResult(
-                    agent_name=self.config.agent_name,
-                    run_id=run_id,
-                    success=False,
-                    data={},
-                    confidence=0.0,
-                    reasoning=str(exc),
-                    cost_usd=0.0,
-                    duration_s=dur,
-                    input_tokens=0,
-                    output_tokens=0,
-                    model=self.config.model,
-                    gate_passed=False,
-                    gate_reason=f"Agent execution failed: {exc}",
-                )
+            if result is None:
+                raise RuntimeError("agent run ended without a result")  # unreachable; keeps the type honest
+            if hasattr(span, "set_attribute"):
+                span.set_attribute("agent.confidence", result.confidence)
+                span.set_attribute("agent.cost_usd", result.cost_usd)
+                span.set_attribute("agent.gate_passed", result.gate_passed)
+                span.set_attribute("agent.duration_s", result.duration_s)
+                span.set_attribute("agent.phase", machine.phase.value)
+                span.set_attribute("agent.model_attempts", machine.model_attempt)
 
         self._audit(result)
         return result
@@ -289,15 +334,25 @@ class AgentHarness:
         return raw, response.usage.input_tokens, response.usage.output_tokens
 
     def _parse_response(self, raw: str) -> tuple[dict, float, str]:
-        """Parse the model's JSON response. Raises on malformed output."""
-        # Strip markdown fences if present
+        """Parse the model's JSON response.
+
+        A malformed body raises ModelOutputError, which the lifecycle may retry.
+        The model has not touched a business system at this point.
+        """
         text = raw.strip()
         if text.startswith("```"):
             lines = text.splitlines()
             text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
 
-        data = json.loads(text)
-        confidence = float(data.get("confidence", 0.0))
+        try:
+            data = json.loads(text)
+            if not isinstance(data, dict):
+                raise ModelOutputError("model output was not a JSON object")
+            confidence = float(data.get("confidence", 0.0))
+        except ModelOutputError:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ModelOutputError(str(exc)) from exc
         reasoning = str(data.get("reasoning", ""))
         return data, confidence, reasoning
 

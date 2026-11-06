@@ -119,7 +119,7 @@ jobs:
 
       - name: Upload gate audit log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deploy-gate-${{ inputs.service }}-${{ github.run_id }}
           path: /tmp/deploy_gate_audit.jsonl

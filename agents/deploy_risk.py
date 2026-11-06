@@ -144,6 +144,8 @@ def assess_deploy_risk(
         max_tokens=1024,  # Very low — we want consistent, conservative decisions
         min_confidence=0.70,
         max_cost_usd=0.20,
+        # High: deploy gates are consequential; lower only after an effort sweep holds quality.
+        reasoning_effort="high",
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
     )
     harness = AgentHarness(config=config, api_key=api_key)

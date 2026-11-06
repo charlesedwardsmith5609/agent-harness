@@ -53,6 +53,9 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6": (3.00, 15.00),
 }
 CHARS_PER_TOKEN = 3.5  # conservative estimate for the pre-call cost ceiling
+# Soft guidance for how hard the model thinks. Lower usually cuts cost more than quality
+# (Vals Index, 2026-11). None leaves the model's default. Passed as output_config.effort.
+REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -75,6 +78,7 @@ class AgentResult:
     model: str
     gate_passed: bool = True  # Set by gate evaluation
     gate_reason: str = ""
+    reasoning_effort: str | None = None
     lifecycle: RunMachine | None = None  # Authoritative phase; not decided by the model
 
     def passed(self) -> bool:
@@ -102,6 +106,17 @@ class RunConfig:
     price_per_m_output: float | None = None
     dry_run: bool = False  # Canned response, no API call. Never a real pass.
     max_attempts: int = 2  # Model-call attempts. Side effects are not retried here.
+    # Soft spend/quality dial. max_cost_usd remains the hard ceiling.
+    reasoning_effort: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.reasoning_effort is None:
+            return
+        level = self.reasoning_effort.strip().lower()
+        if level not in REASONING_EFFORTS:
+            allowed = ", ".join(sorted(REASONING_EFFORTS))
+            raise ValueError(f"reasoning_effort must be one of {allowed}, got {self.reasoning_effort!r}")
+        self.reasoning_effort = level
 
 
 # ── OTel setup ────────────────────────────────────────────────────────────────
@@ -133,7 +148,7 @@ class AgentHarness:
     """
 
     def __init__(self, config: RunConfig, api_key: str | None = None) -> None:
-        self.config = config
+        self.config = config  # __post_init__ already validated reasoning_effort
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self._tracer = _setup_tracer(
             service_name=f"agent-harness.{config.agent_name}",
@@ -178,6 +193,9 @@ class AgentHarness:
                     "agent.name": self.config.agent_name,
                     "agent.run_id": run_id,
                     "agent.model": self.config.model,
+                    **(
+                        {"agent.reasoning_effort": self.config.reasoning_effort} if self.config.reasoning_effort else {}
+                    ),
                     **(context or {}),
                 },
             )
@@ -211,6 +229,7 @@ class AgentHarness:
                         input_tokens=total_in,
                         output_tokens=total_out,
                         model=self.config.model,
+                        reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                     )
                     result = self._evaluate_gates(result)
@@ -258,6 +277,7 @@ class AgentHarness:
                         model=self.config.model,
                         gate_passed=False,
                         gate_reason=f"Agent execution failed: {exc}",
+                        reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                     )
 
@@ -270,6 +290,8 @@ class AgentHarness:
                 span.set_attribute("agent.duration_s", result.duration_s)
                 span.set_attribute("agent.phase", machine.phase.value)
                 span.set_attribute("agent.model_attempts", machine.model_attempt)
+                if self.config.reasoning_effort:
+                    span.set_attribute("agent.reasoning_effort", self.config.reasoning_effort)
 
         self._audit(result)
         return result
@@ -323,14 +345,18 @@ class AgentHarness:
             )
 
         client = anthropic.Anthropic(api_key=self._api_key)
-        response = client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "max_tokens": self.config.max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        # Effort is soft guidance; max_cost_usd / max_tokens remain the hard ceilings.
+        if self.config.reasoning_effort is not None:
+            kwargs["output_config"] = {"effort": self.config.reasoning_effort}
+        response = client.messages.create(**kwargs)
         # Content may include non-text blocks (thinking, tool use); keep only the text.
-        raw = "".join(b.text for b in response.content if b.type == "text")
+        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
         return raw, response.usage.input_tokens, response.usage.output_tokens
 
     def _parse_response(self, raw: str) -> tuple[dict, float, str]:

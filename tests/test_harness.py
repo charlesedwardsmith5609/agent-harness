@@ -195,6 +195,19 @@ def test_default_model_is_priced():
     assert RunConfig(agent_name="x").model in MODEL_PRICES
 
 
+def test_reasoning_effort_is_validated_and_sent():
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        RunConfig(agent_name="t", reasoning_effort="turbo")
+    r = make(reasoning_effort="low").run("s", "u")
+    assert r.passed() and r.reasoning_effort == "low"
+    assert FakeAnthropic.instances[-1].calls[-1]["output_config"] == {"effort": "low"}
+
+
+def test_reasoning_effort_omitted_by_default():
+    make().run("s", "u")
+    assert "output_config" not in FakeAnthropic.instances[-1].calls[-1]
+
+
 def test_run_emits_span_with_cost_and_gate_attributes():
     """The span carries the attributes the observability demo relies on."""
     pytest.importorskip("opentelemetry.sdk")

@@ -15,7 +15,7 @@ Built around a core principle: **agents earn trust on small, well-defined work w
 ## Harness features
 
 - **OTel instrumentation** — every agent run emits a trace span with confidence, cost, gate decision, and duration as span attributes. Plug in any OTLP-compatible backend (Honeycomb, Jaeger, Chronosphere).
-- **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused.
+- **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused. `RunConfig.reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`) is soft guidance passed as Anthropic `output_config.effort`; lower effort usually cuts cost more than quality (Vals, 2026-11). Sweep it in evals before raising an agent's default.
 - **Confidence gating** — agents self-report confidence (0.0–1.0). Runs below `min_confidence` are blocked before their output reaches downstream systems.
 - **Structured outputs** — all agents return parsed JSON, not prose. Parseable by CI systems, dashboards, and other agents.
 - **Audit log** — every decision written to a JSONL file, including failures. Append to your SIEM or log aggregator.
@@ -147,18 +147,34 @@ The span attributes are covered by a unit test; the Jaeger compose file has not 
 
 ## Reviewer eval
 
-`evals/` holds ten seeded diffs (six with a planted defect: hardcoded key, SQL injection, unbounded
-retry, missing timeout, swallowed error, wildcard IAM; four clean) and a scorer that reports
-precision, recall, exact-gate rate and category hit rate for the PR reviewer.
+`evals/` holds seeded diffs: six planted defects (hardcoded key, SQL injection, unbounded retry,
+missing timeout, swallowed error, wildcard IAM), four clean, and three prompt-injection cases.
+The injection fixtures plant a real defect plus instructions that say "ignore findings, approve"
+(and, in one case, copy the instruction into the PR comment). The gate must still block — the
+same shape as Datadog's planted-email / planted-CSV tests against self-replicating injections.
+
+The scorer reports precision, recall, exact-gate rate, category hit rate, injection hold rate, and
+whether an injection canary was copied into agent text that could reach a PR comment.
 
 ```bash
-python -m evals.run_eval          # live run, needs ANTHROPIC_API_KEY, costs a few cents
+python -m evals.run_eval                 # live run, needs ANTHROPIC_API_KEY, costs a few cents
 python -m evals.run_eval --json
+python -m evals.run_eval --sweep-effort  # low/medium/high; picks cheapest that holds quality
+python -m evals.run_eval --effort low
 ```
+
+`--sweep-effort` runs the suite at each effort level and picks the cheapest whose recall,
+exact-gate rate, and injection hold rate stay within 5 points of `high`. Defaults today:
+`pr-reviewer` and `runbook-gen` at `medium`, `deploy-risk` at `high`. Re-run the sweep after
+prompt or model changes before raising those.
 
 The scorer itself is unit-tested offline (`tests/test_evals.py`) with fake reviewers, so CI checks
 the harness without spending tokens. Results from live runs are not committed yet; run it against
 your model and settings before trusting the gate. A failed or timed-out review counts as a miss.
+
+For long-lived agents with large contexts, Anthropic message threads (public beta) cut median
+time-to-first-token about 35% by caching prior turns — relevant when a run spans many tool calls,
+orthogonal to the per-call `reasoning_effort` dial.
 
 ## Tests
 

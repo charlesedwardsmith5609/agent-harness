@@ -170,6 +170,8 @@ def generate_runbook(
         max_tokens=3000,
         min_confidence=0.60,
         max_cost_usd=0.50,
+        # Medium: drafting is less brittle than a merge/deploy gate; sweep before dropping to low.
+        reasoning_effort="medium",
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
     )
     harness = AgentHarness(config=config, api_key=api_key)

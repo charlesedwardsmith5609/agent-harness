@@ -25,6 +25,7 @@ import sys
 # Allow running from repo root
 from harness.agent import AgentHarness, AgentResult, RunConfig
 from harness.defaults import effort_for
+from harness.identity import caller_from_env
 from harness.injection import InjectionReplicationError, refuse_if_replicated
 from harness.lifecycle import CompletionCriteria, Phase
 from harness.schemas import EvidenceError, validate_review_evidence
@@ -273,6 +274,7 @@ def review_diff(
             max_cost_usd=0.30,
             max_cost_usd_per_day=_env_float("AGENT_MAX_COST_USD_PER_DAY"),
             reasoning_effort=effort_for("pr-reviewer"),
+            caller_identity=caller_from_env(),
             audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
             lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
         )
@@ -295,6 +297,8 @@ def review_diff(
     settle_review(result, truncated=truncated)
     if harness is not None and result.lifecycle is not None:
         harness.save_lifecycle(result.lifecycle)
+        # Re-audit after settle so approver identity is on the trail when approved.
+        harness.audit(result)
     return result
 
 

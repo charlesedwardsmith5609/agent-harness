@@ -121,10 +121,15 @@ class RunConfig:
     # Anthropic message-threads beta: cache prior turns for lower TTFT on long contexts.
     use_message_threads: bool = False
     thread_id: str | None = None
+    # Who invoked this run (person or system). Written on every audit row.
+    caller_identity: str | None = None
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
             raise ValueError("max_cost_usd_per_day must be >= 0")
+        if self.caller_identity is not None:
+            cleaned = self.caller_identity.strip()
+            self.caller_identity = cleaned or None
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()
@@ -490,9 +495,17 @@ class AgentHarness:
             result.gate_reason = f"Cost ${result.cost_usd:.4f} exceeds max ${self.config.max_cost_usd:.2f}"
         return result
 
-    def _audit(self, result: AgentResult) -> None:
-        """Append a JSONL audit record for this run."""
+    def audit(self, result: AgentResult) -> None:
+        """Append a JSONL audit record for this run.
+
+        Every row carries agent_name (from the result) and caller_identity (who
+        invoked the run). When the lifecycle has an approval, `approver` is also
+        written (call again after settle so that field is present).
+        """
         record = {**result.to_dict(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        record["caller_identity"] = self.config.caller_identity
+        if result.lifecycle is not None and result.lifecycle.approval is not None:
+            record["approver"] = result.lifecycle.approval.actor
         logger.info("agent_run %s", json.dumps(record))
         if self.config.audit_log_path:
             try:
@@ -500,6 +513,9 @@ class AgentHarness:
                     f.write(json.dumps(record) + "\n")
             except OSError:
                 logger.warning("Could not write audit log to %s", self.config.audit_log_path)
+
+    def _audit(self, result: AgentResult) -> None:
+        self.audit(result)
 
 
 class _NullSpan:

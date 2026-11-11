@@ -6,6 +6,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 - Offline scope-adherence eval (`evals/cases_scope/`): allowed tools/targets vs honeypot proposals; `scope_hold_rate` floor in `evals/baseline.json` and `--check-baseline`.
 - SECURITY.md: sandboxing is not a boundary on its own — document harness gates/lifecycle/audit outside the sandbox; read-only creds and per-run sandboxes called out as operator-owned (not in this repo).
+- Audit rows always include `caller_identity` (`RunConfig` / `AGENT_CALLER` or `GITHUB_ACTOR`); `approver` is promoted from `lifecycle.approval.actor` when present.
 - Persist/resume `RunMachine` via `LifecycleStore` (`AGENT_LIFECYCLE_DIR` / `lifecycle_dir`).
 - Checked-in `evals/baseline.json` floors; `--check-baseline` and offline CI checks.
 - Refuse PR comments that replicate injection canaries / override phrases.

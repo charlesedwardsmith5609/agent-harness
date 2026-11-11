@@ -140,3 +140,51 @@ def test_effort_defaults_load():
 
     assert effort_for("pr-reviewer") == "medium"
     assert effort_for("deploy-risk") == "high"
+
+
+def test_audit_rows_carry_agent_and_caller_identity(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    FakeAnthropic.reply = response({"confidence": 0.9, "reasoning": "ok", "findings": []})
+    harness = AgentHarness(
+        RunConfig(agent_name="pr-reviewer", audit_log_path=str(log), caller_identity="charles"),
+        api_key="k",
+    )
+    result = harness.run("s", "u")
+    assert result.agent_name == "pr-reviewer"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert records[0]["agent_name"] == "pr-reviewer"
+    assert records[0]["caller_identity"] == "charles"
+    assert "timestamp" in records[0]
+
+
+def test_audit_promotes_approver_when_lifecycle_approved(tmp_path):
+    from harness.lifecycle import CompletionCriteria, Phase
+
+    log = tmp_path / "audit.jsonl"
+    FakeAnthropic.reply = response({"confidence": 0.9, "reasoning": "ok", "findings": []})
+    harness = AgentHarness(
+        RunConfig(agent_name="t", audit_log_path=str(log), caller_identity="ci"),
+        api_key="k",
+    )
+    result = harness.run("s", "u")
+    life = result.lifecycle
+    assert life is not None and life.phase == Phase.GATED
+    life.submit_decision("APPROVE", require_human=False)
+    life.approve("policy:test")
+    life.complete(CompletionCriteria(frozenset({"APPROVE"})), gate_passed=True)
+    # Re-write audit after approval so the row includes approver (callers may audit again).
+    harness.audit(result)
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["caller_identity"] == "ci"
+    assert records[-1]["approver"] == "policy:test"
+
+
+def test_caller_from_env_prefers_agent_caller(monkeypatch):
+    from harness.identity import caller_from_env
+
+    monkeypatch.setenv("AGENT_CALLER", "alice")
+    monkeypatch.setenv("GITHUB_ACTOR", "bob")
+    assert caller_from_env() == "alice"
+    monkeypatch.delenv("AGENT_CALLER")
+    assert caller_from_env() == "bob"

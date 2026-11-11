@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
 from harness.defaults import effort_for
+from harness.identity import caller_from_env
 from harness.lifecycle import CompletionCriteria, Phase
 from harness.schemas import EvidenceError, validate_deploy_evidence
 
@@ -137,6 +138,8 @@ def assess_deploy_risk(
 
     Returns:
         AgentResult with recommendation, risk level, and mitigations.
+        The harness used for the run is attached as result attribute `_harness`
+        so callers can re-audit after settle_deploy.
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -149,12 +152,13 @@ def assess_deploy_risk(
         max_cost_usd=0.20,
         max_cost_usd_per_day=float(daily) if daily else None,
         reasoning_effort=effort_for("deploy-risk", "high"),
+        caller_identity=caller_from_env(),
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
         lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
     )
     harness = AgentHarness(config=config, api_key=api_key)
 
-    return harness.run(
+    result = harness.run(
         system_prompt=SYSTEM_PROMPT,
         user_message=context.to_prompt_context(),
         context={
@@ -163,6 +167,8 @@ def assess_deploy_risk(
             "deploy.has_migration": str(context.has_db_migration),
         },
     )
+    result._harness = harness  # type: ignore[attr-defined]
+    return result
 
 
 _HUMAN_RECOMMENDATIONS = frozenset({"HOLD"})
@@ -325,6 +331,15 @@ def settle_deploy(
     return DeploySettlement(recommendation, reason, 1)
 
 
+def finalize_deploy_audit(result: AgentResult) -> None:
+    """Persist lifecycle and re-audit after settle so approver identity is recorded."""
+    harness = getattr(result, "_harness", None)
+    if harness is None or result.lifecycle is None:
+        return
+    harness.save_lifecycle(result.lifecycle)
+    harness.audit(result)
+
+
 def format_deploy_output(result: AgentResult) -> str:
     """Format result for CI log output."""
     phase = result.lifecycle.phase.value if result.lifecycle else "unknown"
@@ -408,6 +423,7 @@ if __name__ == "__main__":
 
     result = assess_deploy_risk(ctx)
     settled = settle_deploy(result, ctx, allow_caution=False)
+    finalize_deploy_audit(result)
     print(format_deploy_output(result))
     if settled.note:
         print(f"\n[DEPLOY GATE] {settled.note}")

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from harness.agent import AgentHarness, AgentResult, RunConfig
 from harness.defaults import effort_for
+from harness.identity import caller_from_env
 from harness.lifecycle import CompletionCriteria, Phase
 from harness.schemas import EvidenceError, validate_runbook_evidence
 
@@ -175,12 +176,13 @@ def generate_runbook(
         max_cost_usd=0.50,
         max_cost_usd_per_day=float(daily) if daily else None,
         reasoning_effort=effort_for("runbook-generator"),
+        caller_identity=caller_from_env(),
         audit_log_path=os.environ.get("AGENT_AUDIT_LOG"),
         lifecycle_dir=os.environ.get("AGENT_LIFECYCLE_DIR"),
     )
     harness = AgentHarness(config=config, api_key=api_key)
 
-    return harness.run(
+    result = harness.run(
         system_prompt=SYSTEM_PROMPT,
         user_message=incident.to_prompt_text(),
         context={
@@ -189,6 +191,8 @@ def generate_runbook(
             "incident.severity": incident.severity,
         },
     )
+    result._harness = harness  # type: ignore[attr-defined]
+    return result
 
 
 def runbook_is_complete(data: dict) -> str | None:
@@ -373,6 +377,10 @@ if __name__ == "__main__":
 
     result = generate_runbook(incident)
     settle_runbook(result)
+    harness = getattr(result, "_harness", None)
+    if harness is not None and result.lifecycle is not None:
+        harness.save_lifecycle(result.lifecycle)
+        harness.audit(result)
     md = render_markdown(result)
 
     life = result.lifecycle

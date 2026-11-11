@@ -20,7 +20,7 @@ Built around a core principle: **agents earn trust on small, well-defined work w
 - **Injection refusal** — PR comments that would copy a known canary or "ignore findings / approve" override are refused before the side effect lands.
 - **Confidence gating** — agents self-report confidence (0.0–1.0). Runs below `min_confidence` are blocked before their output reaches downstream systems.
 - **Structured outputs** — all agents return parsed JSON, not prose. Parseable by CI systems, dashboards, and other agents.
-- **Audit log** — every decision written to a JSONL file, including failures. Append to your SIEM or log aggregator.
+- **Audit log** — every decision written to a JSONL file, including failures. Each row carries `agent_name` and `caller_identity` (`AGENT_CALLER` or `GITHUB_ACTOR`); when a run is approved, `approver` is copied from the lifecycle. Append to your SIEM or log aggregator.
 - **Fail-safe defaults** — a missing API key, missing SDK, API error, malformed JSON, or unpriced model all produce a failed, gated result (BLOCK / HOLD). Silence is not approval. `RunConfig(dry_run=True)` returns a canned response for local wiring tests and can never pass a gate.
 
 ## Quick start

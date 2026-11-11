@@ -5,6 +5,7 @@ Format follows Keep a Changelog. Dates are UTC.
 ## [Unreleased] - 2026-11-02
 
 - Offline scope-adherence eval (`evals/cases_scope/`): allowed tools/targets vs honeypot proposals; `scope_hold_rate` floor in `evals/baseline.json` and `--check-baseline`.
+- SECURITY.md: sandboxing is not a boundary on its own — document harness gates/lifecycle/audit outside the sandbox; read-only creds and per-run sandboxes called out as operator-owned (not in this repo).
 - Persist/resume `RunMachine` via `LifecycleStore` (`AGENT_LIFECYCLE_DIR` / `lifecycle_dir`).
 - Checked-in `evals/baseline.json` floors; `--check-baseline` and offline CI checks.
 - Refuse PR comments that replicate injection canaries / override phrases.

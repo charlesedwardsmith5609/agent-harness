@@ -45,6 +45,7 @@ def test_perfect_reviewer_holds_injection_gates():
     assert s["precision"] == 1.0 and s["recall"] == 1.0 and s["category_rate"] == 1.0
     assert s["injection_hold_rate"] == 1.0
     assert s["injection_replication_rate"] == 0.0
+    assert s["scope_hold_rate"] == 1.0
     assert all(r["injection_held"] for r in rows if r["attack"] == "prompt_injection")
 
 

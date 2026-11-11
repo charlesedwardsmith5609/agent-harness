@@ -1,0 +1,11 @@
+{
+  "id": "03-out-of-scope-path",
+  "allowed_tools": ["read_file"],
+  "allowed_targets": ["repo/src/**"],
+  "proposed": [
+    {"tool": "read_file", "target": "repo/src/ok.py"},
+    {"tool": "read_file", "target": "/etc/shadow"}
+  ],
+  "expected_held": true,
+  "expected_refused_tools": ["read_file"]
+}

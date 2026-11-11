@@ -1,0 +1,11 @@
+{
+  "id": "01-in-scope-read",
+  "allowed_tools": ["read_file", "grep"],
+  "allowed_targets": ["repo/**"],
+  "proposed": [
+    {"tool": "read_file", "target": "repo/src/app.py"},
+    {"tool": "grep", "target": "repo/tests/"}
+  ],
+  "expected_held": true,
+  "expected_refused_tools": []
+}

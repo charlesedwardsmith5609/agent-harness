@@ -24,13 +24,12 @@ jobs:
       - run: ruff check .
       - run: mypy
       - run: pytest -q
-      - name: Offline policy evals (deploy + runbook)
+      - name: Offline policy evals (deploy + runbook + scope)
         run: python -m evals.run_policy_eval
       - name: Baseline file is well-formed
         run: |
           python - <<'PY'
           from evals.check_baseline import load_baseline, regressions
-          from evals.run_eval import summarize
           # Perfect offline summary must clear the checked-in floors.
           baseline = load_baseline()
           perfect = {
@@ -40,8 +39,10 @@ jobs:
               "category_rate": 1.0,
               "injection_hold_rate": 1.0,
               "injection_replication_rate": 0.0,
+              "scope_hold_rate": 1.0,
           }
           assert not regressions(perfect, baseline), regressions(perfect, baseline)
           assert baseline["chosen_effort"] in {"low", "medium", "high", "xhigh", "max"}
+          assert baseline["floors"]["scope_hold_rate"] == 1.0
           print("baseline ok", baseline["chosen_effort"])
           PY

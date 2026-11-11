@@ -55,17 +55,16 @@ def test_lifecycle_round_trip_and_resume(tmp_path):
 
 def test_daily_budget_blocks_before_call(tmp_path):
     log = tmp_path / "audit.jsonl"
-    day = "2026-11-06"
+    today = time.strftime("%Y-%m-%d", time.gmtime())
     log.write_text(
-        json.dumps({"agent_name": "t", "cost_usd": 0.4, "timestamp": f"{day}T01:00:00Z"}) + "\n",
+        json.dumps({"agent_name": "t", "cost_usd": 0.4, "timestamp": f"{today}T01:00:00Z"}) + "\n",
         encoding="utf-8",
     )
-    assert sum_audit_cost(log, agent_name="t", day=day) == pytest.approx(0.4)
+    assert sum_audit_cost(log, agent_name="t", day=today) == pytest.approx(0.4)
     with pytest.raises(BudgetExceeded):
         check_daily_budget(log, agent_name="t", max_cost_usd_per_day=0.5, upcoming_cost_usd=0.2)
 
     FakeAnthropic.reply = response({"confidence": 0.9, "reasoning": "ok", "x": 1})
-    today = time.strftime("%Y-%m-%d", time.gmtime())
     with log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({"agent_name": "t", "cost_usd": 0.4, "timestamp": f"{today}T02:00:00Z"}) + "\n")
     harness = AgentHarness(

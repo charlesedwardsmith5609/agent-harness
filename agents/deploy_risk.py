@@ -288,6 +288,7 @@ def settle_deploy(
         validate_deploy_evidence(result.data)
         recommendation, reason = deploy_recommendation(ctx, result.data)
     except EvidenceError as exc:
+        result.data["evidence_error"] = str(exc)
         recommendation, reason = "HOLD", str(exc)
     result.data["recommendation"] = recommendation
     result.data["recommendation_reason"] = reason

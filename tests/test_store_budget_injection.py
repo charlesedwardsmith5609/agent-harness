@@ -85,6 +85,18 @@ def test_daily_budget_blocks_before_call(tmp_path):
     assert calls() == 0
 
 
+def test_reaudit_counts_a_run_once(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    rows = [
+        {"agent_name": "t", "run_id": "r1", "cost_usd": 0.4, "timestamp": f"{today}T01:00:00Z"},
+        {"agent_name": "t", "run_id": "r1", "cost_usd": 0.4, "timestamp": f"{today}T01:00:01Z"},
+        {"agent_name": "t", "run_id": "r2", "cost_usd": 0.1, "timestamp": f"{today}T01:00:02Z"},
+    ]
+    log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert sum_audit_cost(log, agent_name="t", day=today) == pytest.approx(0.5)
+
+
 def calls():
     return sum(len(i.calls) for i in FakeAnthropic.instances)
 
@@ -96,9 +108,11 @@ def test_injection_refusal_blocks_outbound_copy():
     refuse_if_replicated("Clean review of timeout handling")
 
 
-def test_review_comment_refuses_replicated_canary(monkeypatch):
+def test_review_comment_refuses_replicated_canary(monkeypatch, tmp_path):
     from agents import pr_reviewer
 
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("AGENT_AUDIT_LOG", str(log))
     FakeAnthropic.reply = response(
         {
             "confidence": 0.9,
@@ -113,6 +127,9 @@ def test_review_comment_refuses_replicated_canary(monkeypatch):
     assert result.data["gate_decision"] == "BLOCK"
     assert posted == []
     assert "comment_blocked" in result.data
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert "comment_blocked" not in rows[0]["data"]
+    assert "comment_blocked" in rows[-1]["data"]
 
 
 def test_evidence_schemas_fail_closed():
@@ -178,6 +195,53 @@ def test_audit_promotes_approver_when_lifecycle_approved(tmp_path):
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["caller_identity"] == "ci"
     assert records[-1]["approver"] == "policy:test"
+
+
+def test_schema_errors_are_marked_for_the_audit_row():
+    from agents.deploy_risk import DeploymentContext, settle_deploy
+    from agents.pr_reviewer import settle_review
+    from agents.runbook_gen import settle_runbook
+
+    review = make().run("s", "u")
+    review.data = {"findings": [{"severity": "HIGH"}]}
+    settle_review(review, truncated=False)
+    assert review.data["evidence_error"] == "finding[0] title missing"
+    assert review.data["gate_decision"] == "BLOCK"
+
+    deploy = make().run("s", "u")
+    deploy.data = {"risk_level": "NOPE"}
+    ctx = DeploymentContext(
+        service="payments",
+        environment="production",
+        diff_summary="x",
+        files_changed=["a.py"],
+        lines_added=1,
+        lines_deleted=0,
+    )
+    settle_deploy(deploy, ctx, allow_caution=False)
+    assert "risk_level invalid" in deploy.data["evidence_error"]
+
+    runbook = make().run("s", "u")
+    runbook.data = {"runbook": {"service": "payments"}}
+    settle_runbook(runbook)
+    assert runbook.data["evidence_error"] == "runbook title missing"
+
+
+def test_effect_failure_is_written_to_the_audit_log(tmp_path):
+    from agents.runbook_gen import note_effect_failure, settle_runbook
+
+    log = tmp_path / "audit.jsonl"
+    harness = AgentHarness(RunConfig(agent_name="runbook-generator", audit_log_path=str(log)), api_key="k")
+    result = harness.run("s", "u")
+    result._harness = harness  # type: ignore[attr-defined]
+    result.data = {
+        "runbook": {"title": "Retry storm", "service": "payments", "diagnosis_steps": ["check"], "remediation": []}
+    }
+    settle_runbook(result)
+    note_effect_failure(result, "write-runbook", "inc-1", "disk full")
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["lifecycle"]["effect_attempts"]["write-runbook"] == 1
+    assert rows[-1]["lifecycle"]["phase"] == "failed-retryable"
 
 
 def test_caller_from_env_prefers_agent_caller(monkeypatch):

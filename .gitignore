@@ -18,6 +18,7 @@ venv/
 .mypy_cache/
 
 tmp/
+evals/cases_mined/
 *.env
 secrets/
 credentials/

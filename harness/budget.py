@@ -27,12 +27,18 @@ def sum_audit_cost(
     agent_name: str | None = None,
     day: str | None = None,
 ) -> float:
-    """Sum cost_usd from a JSONL audit file. Missing file → 0.0."""
+    """Sum cost_usd from a JSONL audit file. Missing file → 0.0.
+
+    A run is audited again after settle and after a refused side effect. Those
+    rows repeat the same cumulative cost, so the last row for each run_id counts.
+    Rows with no run_id are still summed individually.
+    """
     path = Path(audit_log_path)
     if not path.exists():
         return 0.0
     target_day = day or _day_key()
     total = 0.0
+    latest: dict[tuple[str, str], float] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -49,10 +55,15 @@ def sum_audit_cost(
         if _day_key(stamp) != target_day:
             continue
         try:
-            total += float(record.get("cost_usd") or 0.0)
+            cost = float(record.get("cost_usd") or 0.0)
         except (TypeError, ValueError):
             continue
-    return total
+        run_id = str(record.get("run_id") or "")
+        if run_id:
+            latest[(str(record.get("agent_name") or ""), run_id)] = cost
+        else:
+            total += cost
+    return total + sum(latest.values())
 
 
 def check_daily_budget(

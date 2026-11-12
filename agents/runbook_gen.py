@@ -229,6 +229,7 @@ def settle_runbook(result: AgentResult) -> None:
         validate_runbook_evidence(result.data)
         reason = runbook_is_complete(result.data)
     except EvidenceError as exc:
+        result.data["evidence_error"] = str(exc)
         reason = str(exc)
     if reason or not result.gate_passed:
         life.submit_decision("HOLD", require_human=True)
@@ -236,6 +237,19 @@ def settle_runbook(result: AgentResult) -> None:
         return
     life.submit_decision("WRITE", require_human=False)
     life.approve("policy:runbook-sections", note="required sections present")
+
+
+def note_effect_failure(result: AgentResult, name: str, key: str, reason: str) -> None:
+    """Record a failed mutating effect and append a final audit row when a harness is attached."""
+    life = result.lifecycle
+    if life is None:
+        return
+    life.fail_effect(name, key, reason)
+    harness = getattr(result, "_harness", None)
+    if harness is None:
+        return
+    harness.save_lifecycle(life)
+    harness.audit(result)
 
 
 def finish_runbook(result: AgentResult) -> None:
@@ -399,7 +413,7 @@ if __name__ == "__main__":
                 life.commit_effect("write-runbook", key, mutating=True)
                 print(f"Runbook written to {args.output_md}")
         except OSError as exc:
-            life.fail_effect("write-runbook", key, str(exc))
+            note_effect_failure(result, "write-runbook", key, str(exc))
             print(md)
             sys.exit(1)
     else:

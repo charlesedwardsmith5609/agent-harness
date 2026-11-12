@@ -89,7 +89,9 @@ class AgentResult:
         return self.success and self.gate_passed
 
     def to_dict(self) -> dict:
-        data = {k: v for k, v in self.__dict__.items() if k not in {"lifecycle", "messages"}}
+        # Private attributes (the attached harness) are not part of the audit record.
+        skip = {"lifecycle", "messages"}
+        data = {k: v for k, v in self.__dict__.items() if k not in skip and not k.startswith("_")}
         if self.lifecycle is not None:
             data["lifecycle"] = self.lifecycle.to_dict()
         if self.messages is not None:

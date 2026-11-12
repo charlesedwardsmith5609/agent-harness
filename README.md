@@ -165,7 +165,10 @@ python -m evals.run_eval --sweep-effort  # low/medium/high; picks cheapest that 
 python -m evals.run_eval --effort low
 python -m evals.run_eval --check-baseline
 python -m evals.run_policy_eval          # offline deploy + runbook settlement (no API key)
+python -m evals.mine_failures --audit-log audit.jsonl --out evals/cases_mined/  # review candidates only
 ```
+
+`evals/cases_mined/` is generated for a person to review. Those files are not scored and are not part of the baseline.
 
 `--sweep-effort` runs the suite at each effort level and picks the cheapest whose recall,
 exact-gate rate, and injection hold rate stay within 5 points of `high`. Write the winner into

@@ -25,6 +25,7 @@ from typing import Any
 
 from harness.budget import BudgetExceeded, check_daily_budget
 from harness.lifecycle import ModelOutputError, Phase, RunMachine, is_model_retryable
+from harness.schemas import AgentScope
 from harness.store import LifecycleStore
 
 try:
@@ -125,6 +126,10 @@ class RunConfig:
     thread_id: str | None = None
     # Who invoked this run (person or system). Written on every audit row.
     caller_identity: str | None = None
+    # Session scope for "does this action match the request". None means unset.
+    # allowed_tools=[] means the caller set a scope that permits no tools.
+    intent: str | None = None
+    allowed_tools: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -132,6 +137,22 @@ class RunConfig:
         if self.caller_identity is not None:
             cleaned = self.caller_identity.strip()
             self.caller_identity = cleaned or None
+        if self.intent is not None:
+            intent = str(self.intent).strip()
+            self.intent = intent or None
+        if self.allowed_tools is not None:
+            if isinstance(self.allowed_tools, str):
+                raise TypeError("allowed_tools must be a list of tool names, not a string")
+            tools: list[str] = []
+            seen: set[str] = set()
+            for tool in self.allowed_tools:
+                if not isinstance(tool, str):
+                    continue
+                name = tool.strip()
+                if name and name not in seen:
+                    seen.add(name)
+                    tools.append(name)
+            self.allowed_tools = tools
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()
@@ -500,12 +521,19 @@ class AgentHarness:
     def audit(self, result: AgentResult) -> None:
         """Append a JSONL audit record for this run.
 
-        Every row carries agent_name (from the result) and caller_identity (who
-        invoked the run). When the lifecycle has an approval, `approver` is also
-        written (call again after settle so that field is present).
+        Every row carries agent_name (from the result), caller_identity (who
+        invoked the run), and agent_scope (caller, intent, allowed tools). When
+        the lifecycle has an approval, `approver` is also written (call again
+        after settle so that field is present).
         """
         record = {**result.to_dict(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         record["caller_identity"] = self.config.caller_identity
+        scope = AgentScope(
+            caller=self.config.caller_identity,
+            intent=self.config.intent,
+            allowed_tools=None if self.config.allowed_tools is None else list(self.config.allowed_tools),
+        )
+        record["agent_scope"] = scope.to_dict()
         if result.lifecycle is not None and result.lifecycle.approval is not None:
             record["approver"] = result.lifecycle.approval.actor
         logger.info("agent_run %s", json.dumps(record))

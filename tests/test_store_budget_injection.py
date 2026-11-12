@@ -13,7 +13,13 @@ from harness.agent import AgentHarness, RunConfig
 from harness.budget import BudgetExceeded, check_daily_budget, sum_audit_cost
 from harness.injection import InjectionReplicationError, find_injection_markers, refuse_if_replicated
 from harness.lifecycle import Phase, RunMachine
-from harness.schemas import EvidenceError, validate_deploy_evidence, validate_review_evidence, validate_runbook_evidence
+from harness.schemas import (
+    EvidenceError,
+    read_agent_scope,
+    validate_deploy_evidence,
+    validate_review_evidence,
+    validate_runbook_evidence,
+)
 from harness.store import LifecycleStore
 from tests.test_harness import FakeAnthropic, make, response
 
@@ -242,6 +248,59 @@ def test_effect_failure_is_written_to_the_audit_log(tmp_path):
     rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["lifecycle"]["effect_attempts"]["write-runbook"] == 1
     assert rows[-1]["lifecycle"]["phase"] == "failed-retryable"
+
+
+def test_read_agent_scope_accepts_legacy_rows_and_distinguishes_empty_tools():
+    legacy = read_agent_scope({"caller_identity": "charles", "agent_name": "pr-reviewer"})
+    assert legacy.caller == "charles"
+    assert legacy.intent is None
+    assert legacy.allowed_tools is None
+
+    omitted = read_agent_scope({"caller_identity": "charles", "agent_scope": {"intent": " review PR "}})
+    assert omitted.caller == "charles"
+    assert omitted.intent == "review PR"
+    assert omitted.allowed_tools is None
+
+    empty = read_agent_scope({"agent_scope": {"caller": "ada", "intent": "review", "allowed_tools": []}})
+    assert empty.allowed_tools == []
+    assert empty.to_dict()["allowed_tools"] == []
+
+    unknown = read_agent_scope({"agent_scope": {"caller": "ada", "allowed_tools": None}})
+    assert unknown.allowed_tools is None
+
+    malformed = read_agent_scope({"caller_identity": "charles", "agent_scope": {"allowed_tools": "read_file"}})
+    assert malformed.caller == "charles"
+    assert malformed.allowed_tools is None
+    mixed = read_agent_scope({"agent_scope": {"allowed_tools": [None, "grep", ""]}})
+    assert mixed.allowed_tools == ["grep"]
+
+    with pytest.raises(EvidenceError):
+        read_agent_scope(["not", "a", "record"])  # type: ignore[arg-type]
+
+
+def test_audit_row_carries_agent_scope_from_run_config(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    harness = AgentHarness(
+        RunConfig(
+            agent_name="pr-reviewer",
+            audit_log_path=str(log),
+            caller_identity="charles",
+            intent="  review pull request  ",
+            allowed_tools=[" read_file ", "read_file", ""],
+        ),
+        api_key="k",
+    )
+    harness.run("s", "u")
+    record = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["caller_identity"] == "charles"
+    assert record["agent_scope"] == {
+        "caller": "charles",
+        "intent": "review pull request",
+        "allowed_tools": ["read_file"],
+    }
+    assert read_agent_scope(record).to_dict() == record["agent_scope"]
+    with pytest.raises(TypeError):
+        RunConfig(agent_name="t", allowed_tools="read_file")  # type: ignore[arg-type]
 
 
 def test_caller_from_env_prefers_agent_caller(monkeypatch):

@@ -5,6 +5,7 @@ Format follows Keep a Changelog. Dates are UTC.
 ## [Unreleased] - 2026-11-02
 
 - Mine recurring audit failures into candidate cases (`python -m evals.mine_failures`). Candidates stay out of `evals/cases/` and the baseline. Schema errors and refused PR comments are marked on the final audit row.
+- Audit rows include `agent_scope` (caller, intent, allowed tools). `allowed_tools` null means the scope was not set; `[]` means no tools are allowed. Rows written before this field still read.
 - Offline scope-adherence eval (`evals/cases_scope/`): allowed tools/targets vs honeypot proposals; `scope_hold_rate` floor in `evals/baseline.json` and `--check-baseline`.
 - SECURITY.md: sandboxing is not a boundary on its own — document harness gates/lifecycle/audit outside the sandbox; read-only creds and per-run sandboxes called out as operator-owned (not in this repo).
 - Audit rows always include `caller_identity` (`RunConfig` / `AGENT_CALLER` or `GITHUB_ACTOR`); `approver` is promoted from `lifecycle.approval.actor` when present.

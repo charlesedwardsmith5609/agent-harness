@@ -14,6 +14,28 @@ def load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def case_regressions(rows: list[dict[str, Any]], baseline: dict[str, Any]) -> list[str]:
+    """Compare each scored row with baseline.json `per_case`.
+
+    Held-out rows are reported here. Callers that tune or mine must drop them first.
+    A missing per_case entry is not a regression.
+    """
+    expected = baseline.get("per_case") or {}
+    if not isinstance(expected, dict):
+        return ["baseline per_case is not an object"]
+    problems: list[str] = []
+    for row in rows:
+        case_id = str(row.get("id") or "")
+        spec = expected.get(case_id)
+        if not isinstance(spec, dict):
+            continue
+        if "gate_exact" in spec and bool(row.get("gate_exact")) != bool(spec["gate_exact"]):
+            problems.append(
+                f"{case_id} gate_exact={bool(row.get('gate_exact'))} expected {bool(spec['gate_exact'])}"
+            )
+    return problems
+
+
 def regressions(summary: dict[str, float], baseline: dict[str, Any]) -> list[str]:
     """Return human-readable regressions against floors/ceilings. Empty means pass."""
     problems: list[str] = []

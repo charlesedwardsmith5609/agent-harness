@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from harness.budget import BudgetExceeded, check_daily_budget
+from harness.injection import find_injection_markers
 from harness.lifecycle import ModelOutputError, Phase, RunMachine, is_model_retryable
+from harness.prefilter import PreFilterDecision, PreFilterError
 from harness.schemas import AgentScope
 from harness.store import LifecycleStore
 
@@ -85,6 +87,8 @@ class AgentResult:
     lifecycle: RunMachine | None = None  # Authoritative phase; not decided by the model
     # Prior turns + this turn's assistant reply (for multi-turn / message-thread resumes).
     messages: list[dict[str, Any]] | None = None
+    # True when the prefilter's confidence was high enough to skip the model call.
+    llm_skipped: bool = False
 
     def passed(self) -> bool:
         return self.success and self.gate_passed
@@ -130,6 +134,12 @@ class RunConfig:
     # allowed_tools=[] means the caller set a scope that permits no tools.
     intent: str | None = None
     allowed_tools: list[str] | None = None
+    # Optional cheap decision. Skip the model only when its confidence is at or
+    # above prefilter_skip_threshold. None means the model is always called.
+    prefilter: Any = None
+    prefilter_skip_threshold: float | None = None
+    # When set, the run is refused unless model is on this list. Empty rejects all.
+    allowed_models: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -153,6 +163,13 @@ class RunConfig:
                     seen.add(name)
                     tools.append(name)
             self.allowed_tools = tools
+        if self.prefilter_skip_threshold is not None and not 0.0 <= self.prefilter_skip_threshold <= 1.0:
+            raise ValueError("prefilter_skip_threshold must be between 0 and 1")
+        if self.allowed_models is not None:
+            model_allowlist = [str(item).strip() for item in self.allowed_models if str(item).strip()]
+            if self.model not in model_allowlist:
+                raise ValueError(f"model {self.model!r} is not on the allowlist")
+            self.allowed_models = model_allowlist
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()
@@ -270,7 +287,11 @@ class AgentHarness:
             result: AgentResult | None = None
             while machine.phase == Phase.RUNNING:
                 try:
-                    raw, input_tok, output_tok = self._call_api(system_prompt, transcript)
+                    pre = self._prefilter_decision(system_prompt, user_message) if machine.model_attempt == 1 else None
+                    if pre is not None:
+                        raw, input_tok, output_tok = json.dumps(pre.data), 0, 0
+                    else:
+                        raw, input_tok, output_tok = self._call_api(system_prompt, transcript)
                     total_in += input_tok
                     total_out += output_tok
                     total_cost += self._calculate_cost(input_tok, output_tok)
@@ -293,6 +314,7 @@ class AgentHarness:
                         reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                         messages=messages,
+                        llm_skipped=pre is not None,
                     )
                     result = self._evaluate_gates(result)
                     if self.config.dry_run:
@@ -426,6 +448,28 @@ class AgentHarness:
         inp, out = self._prices()
         est_in = (len(system) + self._messages_chars(messages)) / CHARS_PER_TOKEN
         return est_in / 1_000_000 * inp + self.config.max_tokens / 1_000_000 * out
+
+    def _prefilter_decision(self, system: str, user: str) -> PreFilterDecision | None:
+        """Return a decision only when the model may be skipped.
+
+        A flagged input always returns None so the model is called. A prefilter
+        that raises becomes PreFilterError, which is not a retryable model failure.
+        """
+        if self.config.prefilter is None or self.config.prefilter_skip_threshold is None:
+            return None
+        if find_injection_markers(system) or find_injection_markers(user):
+            return None
+        try:
+            decision = self.config.prefilter(system, user)
+        except PreFilterError:
+            raise
+        except Exception as exc:
+            raise PreFilterError(str(exc)) from exc
+        if not isinstance(decision, PreFilterDecision):
+            raise PreFilterError("prefilter did not return PreFilterDecision")
+        if decision.confidence >= self.config.prefilter_skip_threshold:
+            return decision
+        return None
 
     def _call_api(self, system: str, messages: list[dict[str, Any]]) -> tuple[str, int, int]:
         """Call the Anthropic API and return (raw_text, input_tokens, output_tokens).

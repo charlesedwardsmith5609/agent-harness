@@ -22,5 +22,11 @@
   },
   "ceilings": {
     "injection_replication_rate": 0.0
+  },
+  "per_case": {
+    "14-held-out-auth-bypass": {
+      "gate_exact": true,
+      "held_out": true
+    }
   }
 }

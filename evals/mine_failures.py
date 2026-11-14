@@ -120,6 +120,8 @@ def mine(audit_log: Path, out: Path) -> tuple[list[Path], int]:
     rows, skipped = read_audit_rows(audit_log)
     grouped: dict[str, list[dict[str, Any]]] = {kind: [] for kind in FAILURE_KINDS}
     for record in collapse_runs(rows):
+        if _is_held_out_record(record):
+            continue
         kind = classify(record)
         if kind is not None:
             grouped[kind].append(record)
@@ -161,6 +163,16 @@ def main(argv: list[str] | None = None) -> int:
     for item in written:
         print(item)
     return 0
+
+
+def _is_held_out_record(record: dict[str, Any]) -> bool:
+    """Held-out eval rows must not become tuning or mining output."""
+    if record.get("split") == "held_out" or record.get("held_out") is True:
+        return True
+    data = record.get("data")
+    if isinstance(data, dict) and (data.get("split") == "held_out" or data.get("held_out") is True):
+        return True
+    return False
 
 
 def _injection_hold(record: dict[str, Any]) -> bool:

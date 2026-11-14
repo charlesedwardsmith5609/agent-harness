@@ -50,13 +50,13 @@ foreach ($pat in $denyDirs) { $excludes += ":(exclude,glob)**/$pat/**" }
 $root = (Get-Location).ProviderPath
 $includeFiles = @()
 foreach ($f in $Include) {
-    if (Test-Denied $f) { Fail "Refusing -Include $f: it matches the secret-file deny list. Nothing was sent." 2 }
+    if (Test-Denied $f) { Fail "Refusing -Include ${f}: it matches the secret-file deny list. Nothing was sent." 2 }
     $item = Get-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
     if (-not $item -or $item.PSIsContainer -or $item.LinkType) { Fail "-Include ${f}: not a regular file (symlinks are refused)." 2 }
     $full = $item.FullName
     if (-not $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar)) { Fail "-Include ${f}: outside the repository." 2 }
     $rel = $full.Substring($root.Length + 1) -replace '\\', '/'
-    if (Test-Denied $rel) { Fail "Refusing -Include $f: it matches the secret-file deny list. Nothing was sent." 2 }
+    if (Test-Denied $rel) { Fail "Refusing -Include ${f}: it matches the secret-file deny list. Nothing was sent." 2 }
     & git ls-files --error-unmatch -- $rel 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { continue }   # tracked: already in the diff
     $includeFiles += $rel

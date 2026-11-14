@@ -93,25 +93,49 @@ scan_go() {
 scan_py() {
   local file="$1"
   local hits
+  # A test begins at a "def test_" line and owns every following line indented deeper than
+  # that def. It ends at the next non-blank line at the def line indentation or less (the next
+  # test, a decorator, another def, or module code). A def or class nested inside the body does
+  # not end the test, and an assert inside a nested helper counts toward the enclosing test
+  # (a helper that is never called is not detected). Triple-quoted strings and lines that only
+  # close a bracket or hold a comment are not treated as dedents.
   hits=$(awk '
     function flush() {
       if (name != "" && asserted == 0) print name
+      name = ""
     }
-    /^[[:space:]]*def test_/ {
-      flush()
-      name = $2
-      sub(/\(.*/, "", name)
-      asserted = 0
-      next
-    }
-    /^[[:space:]]*def / { flush(); name = "" }
     {
+      raw = $0
+      n = gsub(/"""|\047\047\047/, "&", raw)
+      if (intriple) {
+        if (n % 2 == 1) intriple = 0
+        next
+      }
       line = $0
+      if (n % 2 == 1) {
+        sub(/("""|\047\047\047).*$/, "", line)
+        intriple = 1
+      } else if (n > 0) {
+        gsub(/("""|\047\047\047).*("""|\047\047\047)/, "", line)
+      }
       gsub(/"([^"\\]|\\.)*"/, "\"\"", line)
       gsub(/\047([^\047\\]|\\.)*\047/, "\047\047", line)
       sub(/#.*/, "", line)
+      if (line ~ /^[[:space:]]*$/ && !(n % 2 == 1)) next
+      if (line ~ /^[[:space:]]*[])}]/) next
+      match(line, /^[[:space:]]*/)
+      ind = RLENGTH
+      if (name != "" && ind <= tind) flush()
+      if (name == "" && line ~ /^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_/) {
+        name = line
+        sub(/^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+/, "", name)
+        sub(/\(.*/, "", name)
+        tind = ind
+        asserted = 0
+        next
+      }
+      if (name != "" && line ~ /assert |assert\(|pytest\.raises|pytest\.fail|self\.assert/) asserted = 1
     }
-    name != "" && line ~ /assert |assert\(|pytest\.raises|pytest\.fail|self\.assert/ { asserted = 1 }
     END { flush() }
   ' "$file")
   local name

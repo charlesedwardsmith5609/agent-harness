@@ -140,6 +140,9 @@ class RunConfig:
     prefilter_skip_threshold: float | None = None
     # When set, the run is refused unless model is on this list. Empty rejects all.
     allowed_models: list[str] | None = None
+    # Set by the harness owner for held-out eval runs. Written to the audit row so
+    # mining can skip it. Never read from model output.
+    held_out: bool = False
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -585,6 +588,7 @@ class AgentHarness:
         """
         record = {**result.to_dict(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         record["caller_identity"] = self.config.caller_identity
+        record["held_out"] = bool(self.config.held_out)
         scope = AgentScope(
             caller=self.config.caller_identity,
             intent=self.config.intent,

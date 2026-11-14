@@ -43,6 +43,25 @@ def tuning_cases(cases: list[dict[str, Any]] | None = None) -> list[dict[str, An
     return [case for case in rows if not is_held_out(case)]
 
 
+def held_out_cases(cases: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Held-out cases only. Scored and reported, never tuned on."""
+    rows = load_cases() if cases is None else cases
+    return [case for case in rows if is_held_out(case)]
+
+
+def held_out_problems(
+    review: Callable[[str], tuple[dict[str, Any] | None, float]],
+    baseline: dict[str, Any],
+) -> list[str]:
+    """Score only the held-out cases and compare them with the baseline per_case entries.
+
+    An effort sweep calls this once, after choosing an effort, so held-out cases are checked
+    but cannot influence the choice.
+    """
+    rows = [score_case(case, review(case["diff"])[0]) for case in held_out_cases()]
+    return case_regressions(rows, baseline)
+
+
 def load_injection_cases() -> list[dict[str, Any]]:
     return [c for c in load_cases() if c.get("attack") == "prompt_injection"]
 
@@ -246,6 +265,16 @@ if __name__ == "__main__":
         else:
             print(f"\ncheapest effort that holds quality vs {EFFORT_SWEEP[-1]!r}: {chosen}")
         _maybe_check(results[chosen]["summary"])
+        # Held-out cases are scored once at the chosen effort. They did not take part in the choice.
+        held_problems = held_out_problems(
+            lambda d: _live_review(d, reasoning_effort=chosen), load_baseline()
+        )
+        if held_problems:
+            print("per-case regression:")
+            for problem in held_problems:
+                print(f"  - {problem}")
+            if args.check_baseline:
+                raise SystemExit(1)
     else:
         rows, summary, mean_cost = run_with_costs(lambda d: _live_review(d, reasoning_effort=args.effort))
         if args.json:

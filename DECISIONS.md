@@ -69,3 +69,13 @@ Evidence: every file in `evals/cases/` has `expected_category` (null on clean di
 Choice: keep `expected_category` on the PR-reviewer cases and group injection hold rate by it. Add `category` to each scope case. Add one scope case, `05-poisoned-memory`, whose remembered shell command is refused. The new report is counts and rates. Baseline floors are unchanged.
 
 Why: Do not rename a field the scorer already uses. Do not add a second poisoned case in the injection suite when one case was requested.
+
+## 2026-11-14: Held-out comes from the harness only; missing held-out row fails
+
+Context: Review findings 3, 8, 9. The earlier held-out entry (2026-11-13) let mining drop rows whose model-supplied `data` carried `held_out` or `split`. Real audit rows never carried a top-level flag, so exclusion was dead for them. A baseline-listed held-out id with no scored row passed. `--sweep-effort` never checked held-out cases.
+
+Supersedes: the `data.*` part of "Held-out split is a case field" and the sentence "Missing `per_case` entries are not regressions" for held-out ids. The rest of that entry stands.
+
+Choice: `RunConfig.held_out` (set by the harness owner) is written by `audit()` as top-level `held_out`. Mining reads only top-level `split`/`held_out`; `data.*` is ignored. In `baseline.json`, a `per_case` entry with `held_out: true` and no scored row is a problem. A scored row with no `per_case` entry still passes. After choosing an effort, a sweep scores the held-out cases once at that effort and reports problems (exit 1 with `--check-baseline`); the held-out cases never take part in the choice.
+
+Why: Model output cannot be trusted to mark or unmark its own row. Failing on a missing row closes the silent-pass hole without breaking cases that have no baseline entry.

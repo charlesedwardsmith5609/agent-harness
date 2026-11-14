@@ -166,13 +166,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _is_held_out_record(record: dict[str, Any]) -> bool:
-    """Held-out eval rows must not become tuning or mining output."""
-    if record.get("split") == "held_out" or record.get("held_out") is True:
-        return True
-    data = record.get("data")
-    if isinstance(data, dict) and (data.get("split") == "held_out" or data.get("held_out") is True):
-        return True
-    return False
+    """Held-out eval rows must not become tuning or mining output.
+
+    Only the top-level keys count. They are written by the harness (RunConfig.held_out).
+    `data` is model output and is never trusted for this.
+    """
+    return record.get("split") == "held_out" or record.get("held_out") is True
 
 
 def _injection_hold(record: dict[str, Any]) -> bool:

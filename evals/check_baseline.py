@@ -18,12 +18,17 @@ def case_regressions(rows: list[dict[str, Any]], baseline: dict[str, Any]) -> li
     """Compare each scored row with baseline.json `per_case`.
 
     Held-out rows are reported here. Callers that tune or mine must drop them first.
-    A missing per_case entry is not a regression.
+    A scored row with no per_case entry is not a regression. A per_case entry marked
+    `held_out` with no scored row is: a held-out case that was not scored must fail.
     """
     expected = baseline.get("per_case") or {}
     if not isinstance(expected, dict):
         return ["baseline per_case is not an object"]
     problems: list[str] = []
+    scored = {str(row.get("id") or "") for row in rows}
+    for case_id, spec in expected.items():
+        if isinstance(spec, dict) and spec.get("held_out") is True and case_id not in scored:
+            problems.append(f"{case_id} is held out in the baseline but has no scored row")
     for row in rows:
         case_id = str(row.get("id") or "")
         spec = expected.get(case_id)

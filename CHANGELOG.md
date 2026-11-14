@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Held-out is set by the harness only (`RunConfig.held_out`, written as top-level `held_out` on every audit row); mining ignores `data.held_out` and `data.split`. A held-out id listed in `baseline.json` with no scored row now fails. `--sweep-effort` scores held-out cases once at the chosen effort and reports regressions without tuning on them.
 - Injection scanner normalizes text (NFKC, casefold, zero-width removed, whitespace collapsed) before matching, canaries included. The prefilter now scans the system prompt, every prior turn (any role, str or block content) and the new message; a hit in any forces the model call.
 - Injection and scope evals report a rate per category. Scope cases gained a `category` field, including one poisoned-memory case. PR-reviewer cases already had `expected_category`.
 - Test double `tests/fake_effects.py` covers side-effect scenarios success, timeout after commit, partial, latent, and duplicate. Idempotency stays on the lifecycle machine.

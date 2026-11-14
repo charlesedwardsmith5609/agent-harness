@@ -49,3 +49,13 @@ Options: reject every run until an allowlist file exists in the repo; reject onl
 Choice: an unset `allowed_models` does not add a second gate. A set list must contain `model`. An empty list rejects every model. No new model ids were added.
 
 Why: Shipping an empty or guessed allowlist would fail every current caller, or would invent model ids. The operator's list is the fail-closed control.
+
+## 2026-11-13: Side-effect double stays in tests
+
+Context: Tests need a provider with success, timeout after commit, partial, latent, and duplicate outcomes, exercising idempotency keys and the lifecycle machine.
+
+Options: a production provider interface plus a fake; a test-only double that calls the existing machine methods.
+
+Choice: `tests/fake_effects.py` calls `perform_effect`, `commit_effect`, and `fail_effect`. Timeout is raised after commit so the key is already recorded. Partial uses `fail_effect` and does not commit. Latent commits and reports that the effect is not visible yet. A second apply with the same key returns duplicate because `perform_effect` returns false. No new dependency and no new production type.
+
+Why: The lifecycle machine is already the owner of the key. A second implementation could drift from it.

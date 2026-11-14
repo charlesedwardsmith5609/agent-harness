@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Test double `tests/fake_effects.py` covers side-effect scenarios success, timeout after commit, partial, latent, and duplicate. Idempotency stays on the lifecycle machine.
 - Audit rows include `model`. `RunConfig.allowed_models`, when set, rejects a model id that is not on the list (an empty list rejects every model).
 - Held-out eval split (`"split": "held_out"`). Effort sweeps and `mine_failures` ignore those cases. `baseline.json` `per_case` is compared by `case_regressions`.
 - Optional prefilter (`RunConfig.prefilter` and `prefilter_skip_threshold`) can skip the model when confidence is high enough. An injection-scanner hit on the system prompt or user message always calls the model. Audit rows include `llm_skipped`.

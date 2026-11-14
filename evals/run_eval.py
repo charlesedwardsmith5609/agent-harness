@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -209,7 +210,15 @@ def _print_summary(summary: dict[str, float]) -> None:
     print({k: round(v, 2) if isinstance(v, float) else v for k, v in summary.items()})
 
 
-if __name__ == "__main__":
+def _report(problems: list[str], label: str, *, json_mode: bool) -> None:
+    """Print a regression list. Under --json it goes to stderr so stdout stays one JSON document."""
+    out = sys.stderr if json_mode else sys.stdout
+    print(f"{label}:", file=out)
+    for problem in problems:
+        print(f"  - {problem}", file=out)
+
+
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
     ap.add_argument(
@@ -228,16 +237,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Exit non-zero when the summary regresses past evals/baseline.json floors",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     def _maybe_check(summary: dict[str, float]) -> None:
         if not args.check_baseline:
             return
         problems = regressions(summary, load_baseline())
         if problems:
-            print("baseline regression:")
-            for problem in problems:
-                print(f"  - {problem}")
+            _report(problems, "baseline regression", json_mode=args.json)
             raise SystemExit(1)
 
     if args.sweep_effort:
@@ -270,9 +277,7 @@ if __name__ == "__main__":
             lambda d: _live_review(d, reasoning_effort=chosen), load_baseline()
         )
         if held_problems:
-            print("per-case regression:")
-            for problem in held_problems:
-                print(f"  - {problem}")
+            _report(held_problems, "per-case regression", json_mode=args.json)
             if args.check_baseline:
                 raise SystemExit(1)
     else:
@@ -293,8 +298,10 @@ if __name__ == "__main__":
         _maybe_check(summary)
         case_problems = case_regressions(rows, load_baseline())
         if case_problems:
-            print("per-case regression:")
-            for problem in case_problems:
-                print(f"  - {problem}")
+            _report(case_problems, "per-case regression", json_mode=args.json)
             if args.check_baseline:
                 raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

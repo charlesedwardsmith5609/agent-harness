@@ -314,6 +314,10 @@ class AgentHarness:
                     total_out += output_tok
                     total_cost += self._calculate_cost(input_tok, output_tok)
                     data, confidence, reasoning = self._parse_response(raw)
+                    if pre is not None:
+                        # The lower of the decision's and the payload's confidence gates.
+                        # A payload with no confidence parses as 0.0 and stays fail-closed.
+                        confidence = min(confidence, pre.confidence)
                     dur = time.monotonic() - start
                     messages = list(transcript) + [{"role": "assistant", "content": raw}]
 

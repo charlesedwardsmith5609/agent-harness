@@ -130,3 +130,48 @@ def test_clean_history_still_skips():
     result = _prefilter_harness().run("system", "review this diff", prior_messages=history)
     assert result.llm_skipped
     assert FakeAnthropic.instances == []
+
+
+def _decision(confidence: float, payload: dict) -> PreFilterDecision:
+    return PreFilterDecision(confidence=confidence, reason="r", data=payload)
+
+
+def _run_skipped(decision: PreFilterDecision, **kw):
+    harness = AgentHarness(
+        RunConfig(
+            agent_name="t",
+            prefilter=lambda system, user: decision,
+            prefilter_skip_threshold=0.5,
+            min_confidence=0.7,
+            **kw,
+        ),
+        api_key="k",
+    )
+    return harness.run("system", "review this diff")
+
+
+def test_lower_payload_confidence_gates_a_skipped_run():
+    result = _run_skipped(_decision(0.95, {"confidence": 0.2, "reasoning": "p", "findings": []}))
+    assert result.llm_skipped
+    assert result.confidence == 0.2
+    assert not result.gate_passed
+    assert "Confidence 0.20" in result.gate_reason
+
+
+def test_lower_decision_confidence_gates_a_skipped_run():
+    result = _run_skipped(_decision(0.75, {"confidence": 0.99, "reasoning": "p", "findings": []}), )
+    assert result.llm_skipped
+    assert result.confidence == 0.75
+    assert result.gate_passed
+
+
+def test_payload_without_confidence_stays_fail_closed_on_a_skipped_run():
+    result = _run_skipped(_decision(0.95, {"reasoning": "p", "findings": []}))
+    assert result.llm_skipped
+    assert result.confidence == 0.0
+    assert not result.gate_passed
+
+
+def test_agreeing_confidences_pass():
+    result = _run_skipped(_decision(0.95, {"confidence": 0.95, "reasoning": "p", "findings": []}))
+    assert result.llm_skipped and result.gate_passed and result.confidence == 0.95

@@ -91,3 +91,13 @@ Choice:
 - Finding 7: a scope case with `memory` models an agent that obeys it: `memory_actions` join `proposed`. Without `memory` they do not, so the row's refused tools change and the case stops matching. A policy that allows the remembered tool fails the case.
 
 Why: Smallest change that keeps existing consumers working and makes each test able to fail.
+
+## 2026-11-14: Confidence disagreement, and `--json` scope
+
+Context: Review findings 10 and 11. Finding 11 does not say which confidences disagree.
+
+Choice for 11 (conservative reading): on a prefilter-skipped run, the gate uses the lower of the prefilter decision's confidence and the payload's `confidence`. A payload with no `confidence` still parses as 0.0, so it stays fail-closed (the earlier plan draft would have fallen back to the decision's value; that is less safe and was not adopted). Runs that call the model are unchanged.
+
+Choice for 10: with `--json`, stdout is exactly one JSON document for `evals.run_eval` (single run and `--sweep-effort`) and for `evals.run_policy_eval`. Regression and failure text goes to stderr in that mode; without `--json` it stays on stdout. `run_eval` and `run_policy_eval` gained `main(argv)` so this is testable.
+
+Why: Lower-of-two never raises trust. Machine consumers can parse stdout without stripping text.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -152,10 +153,10 @@ def run_all() -> dict[str, Any]:
     }
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     report = run_all()
     if args.json:
         print(json.dumps(report, indent=2))
@@ -167,5 +168,12 @@ if __name__ == "__main__":
             print(f"[{family}] exact_rate={report[family]['exact_rate']:.2f}{extra}")
             for row in report[family]["rows"]:
                 print(f"  {row}")
-    bad = any(report[f]["exact_rate"] < 1.0 for f in ("deploy", "runbook", "scope"))
-    raise SystemExit(1 if bad else 0)
+    failing = [f for f in ("deploy", "runbook", "scope") if report[f]["exact_rate"] < 1.0]
+    if failing and args.json:
+        # stdout stays one JSON document; say why the exit code is 1 on stderr.
+        print(f"policy eval below 1.0: {', '.join(failing)}", file=sys.stderr)
+    return 1 if failing else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

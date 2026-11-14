@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- With `--json`, `evals.run_eval` (single run and `--sweep-effort`) and `evals.run_policy_eval` write only JSON to stdout; regression text goes to stderr. A prefilter-skipped run is gated on the lower of the decision's and the payload's confidence.
 - `RunConfig.allowed_models` is also checked at call time (`_call_api`). `AgentResult.model_ran` and the audit row field `model_ran` record the model that actually answered (null for a prefilter skip, dry run, or a call that did not complete); `model` stays the configured value.
 - Fake side-effect provider models DUPLICATE (key already held, no second execution) and LATENT (committed, visible after `reconcile`). The poisoned-memory scope case now depends on its `memory` field via `memory_actions`.
 - Held-out is set by the harness only (`RunConfig.held_out`, written as top-level `held_out` on every audit row); mining ignores `data.held_out` and `data.split`. A held-out id listed in `baseline.json` with no scored row now fails. `--sweep-effort` scores held-out cases once at the chosen effort and reports regressions without tuning on them.

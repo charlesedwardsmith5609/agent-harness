@@ -101,7 +101,8 @@ if (-not (Get-Command gitleaks -ErrorAction SilentlyContinue)) {
     $ErrorActionPreference = 'Continue'   # native stderr must not throw while we capture it
     # `gitleaks stdin` is the current form; older 8.x releases only have `detect --pipe`.
     $useStdin = (& gitleaks stdin --help 2>&1 | Out-String) -match 'gitleaks stdin'
-    $gl = if ($useStdin) { @('stdin') } else { @('detect', '--pipe') }
+    # @(...) keeps a one-element result an array; a bare string would be splatted one character at a time.
+    $gl = @(if ($useStdin) { 'stdin' } else { 'detect'; '--pipe' })
     $scan = $user | & gitleaks @gl --no-banner --no-color --redact --verbose --exit-code 7 2>&1 | Out-String
     $scanExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'

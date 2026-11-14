@@ -64,3 +64,40 @@ def test_effect_from_running_is_refused() -> None:
     provider = FakeEffectProvider([EffectScenario.SUCCESS])
     with pytest.raises(TransitionError):
         provider.apply(machine, "deploy", "key-1")
+
+
+def test_duplicate_scenario_does_not_re_execute_the_effect() -> None:
+    """The provider already holds the key (a lost reply). The machine has not seen it commit."""
+    machine = _approved()
+    provider = FakeEffectProvider([EffectScenario.DUPLICATE])
+    assert provider.apply(machine, "deploy", "key-1") == "duplicate"
+    assert provider.executed.get("key-1", 0) == 0  # nothing ran a second time
+    assert machine.effects["deploy"] == "key-1"  # but the machine now knows it landed
+
+
+def test_duplicate_detected_by_the_machine_does_not_execute_either() -> None:
+    machine = _approved()
+    provider = FakeEffectProvider([EffectScenario.SUCCESS, EffectScenario.SUCCESS])
+    assert provider.apply(machine, "deploy", "key-1") == "success"
+    assert provider.apply(machine, "deploy", "key-1") == "duplicate"
+    assert provider.executed["key-1"] == 1
+
+
+def test_success_executes_exactly_once_and_is_visible() -> None:
+    machine = _approved()
+    provider = FakeEffectProvider([EffectScenario.SUCCESS])
+    provider.apply(machine, "deploy", "key-1")
+    assert provider.executed["key-1"] == 1
+    assert provider.is_visible("key-1")
+
+
+def test_latent_effect_is_committed_but_not_visible_until_reconciled() -> None:
+    machine = _approved()
+    provider = FakeEffectProvider([EffectScenario.LATENT])
+    assert provider.apply(machine, "deploy", "key-1") == "latent"
+    assert machine.effects["deploy"] == "key-1"  # the key is recorded, so a replay is a duplicate
+    assert not provider.is_visible("key-1")  # a SUCCESS would be visible here
+    assert provider.reconcile("key-1") is True
+    assert provider.is_visible("key-1")
+    assert provider.executed["key-1"] == 1
+    assert provider.reconcile("key-1") is False  # nothing left to reconcile

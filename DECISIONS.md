@@ -79,3 +79,15 @@ Supersedes: the `data.*` part of "Held-out split is a case field" and the senten
 Choice: `RunConfig.held_out` (set by the harness owner) is written by `audit()` as top-level `held_out`. Mining reads only top-level `split`/`held_out`; `data.*` is ignored. In `baseline.json`, a `per_case` entry with `held_out: true` and no scored row is a problem. A scored row with no `per_case` entry still passes. After choosing an effort, a sweep scores the held-out cases once at that effort and reports problems (exit 1 with `--check-baseline`); the held-out cases never take part in the choice.
 
 Why: Model output cannot be trusted to mark or unmark its own row. Failing on a missing row closes the silent-pass hole without breaking cases that have no baseline entry.
+
+## 2026-11-14: Call-time allowlist, `model_ran`, fake provider semantics, memory eval
+
+Context: Review findings 4, 5, 6, 7.
+
+Choice:
+- Finding 4: `check_model_allowed(model, allowed)` runs at construction and at the top of `_call_api`, before the dry-run branch and before any client is built. A config changed after construction fails closed.
+- Finding 5: `model` keeps meaning the configured request (budget and mining readers are unchanged). New `AgentResult.model_ran: str | None` is the model that actually answered; it is `None` for a prefilter skip, a dry run, and a run whose call never completed. It is written on every audit row.
+- Finding 6: the fake provider tracks what the outside system saw. DUPLICATE means the outside system already holds the key (lost reply): the effect does not run again and the machine records it as landed. LATENT commits under the key but is not visible until `reconcile(key)`. This replaces the 2026-11-13 wording "Latent commits and reports that the effect is not visible yet" only by making visibility checkable; tests assert execution counts and visibility.
+- Finding 7: a scope case with `memory` models an agent that obeys it: `memory_actions` join `proposed`. Without `memory` they do not, so the row's refused tools change and the case stops matching. A policy that allows the remembered tool fails the case.
+
+Why: Smallest change that keeps existing consumers working and makes each test able to fail.

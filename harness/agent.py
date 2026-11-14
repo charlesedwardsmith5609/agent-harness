@@ -89,6 +89,9 @@ class AgentResult:
     messages: list[dict[str, Any]] | None = None
     # True when the prefilter's confidence was high enough to skip the model call.
     llm_skipped: bool = False
+    # The model that actually answered. None when no model ran (prefilter skip, dry run, or
+    # a call that never completed). `model` is the configured request and may differ.
+    model_ran: str | None = None
 
     def passed(self) -> bool:
         return self.success and self.gate_passed
@@ -102,6 +105,12 @@ class AgentResult:
         if self.messages is not None:
             data["message_count"] = len(self.messages)
         return data
+
+
+def check_model_allowed(model: str, allowed: list[str] | None) -> None:
+    """Raise unless `model` is on the allowlist. None means no allowlist; an empty list rejects all."""
+    if allowed is not None and model not in allowed:
+        raise ValueError(f"model {model!r} is not on the allowlist")
 
 
 @dataclass
@@ -170,8 +179,7 @@ class RunConfig:
             raise ValueError("prefilter_skip_threshold must be between 0 and 1")
         if self.allowed_models is not None:
             model_allowlist = [str(item).strip() for item in self.allowed_models if str(item).strip()]
-            if self.model not in model_allowlist:
-                raise ValueError(f"model {self.model!r} is not on the allowlist")
+            check_model_allowed(self.model, model_allowlist)
             self.allowed_models = model_allowlist
         if self.reasoning_effort is None:
             return
@@ -288,6 +296,7 @@ class AgentHarness:
             total_out = 0
             total_cost = 0.0
             result: AgentResult | None = None
+            model_ran: str | None = None
             while machine.phase == Phase.RUNNING:
                 try:
                     pre = (
@@ -299,6 +308,8 @@ class AgentHarness:
                         raw, input_tok, output_tok = json.dumps(pre.data), 0, 0
                     else:
                         raw, input_tok, output_tok = self._call_api(system_prompt, transcript)
+                        if not self.config.dry_run:
+                            model_ran = self.config.model
                     total_in += input_tok
                     total_out += output_tok
                     total_cost += self._calculate_cost(input_tok, output_tok)
@@ -322,6 +333,7 @@ class AgentHarness:
                         lifecycle=machine,
                         messages=messages,
                         llm_skipped=pre is not None,
+                        model_ran=model_ran,
                     )
                     result = self._evaluate_gates(result)
                     if self.config.dry_run:
@@ -379,6 +391,7 @@ class AgentHarness:
                         reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                         messages=list(transcript),
+                        model_ran=model_ran,
                     )
 
             if result is None:
@@ -494,6 +507,7 @@ class AgentHarness:
         gated. Only an explicit RunConfig(dry_run=True) returns a canned response, and that
         response is marked DRY_RUN with zero confidence so no gate can pass on it.
         """
+        check_model_allowed(self.config.model, self.config.allowed_models)
         if self.config.dry_run:
             canned = json.dumps(
                 {

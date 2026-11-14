@@ -122,7 +122,7 @@ def _real_audit_rows(log: Path, *, held_out: bool, count: int = 2) -> None:
             RunConfig(agent_name="pr-reviewer", audit_log_path=str(log), held_out=held_out),
             api_key="k",
         )
-        harness.audit(harness.run("system", "review this"))
+        harness.run("system", "review this")  # run() audits to audit_log_path
 
 
 def test_real_audit_row_from_held_out_run_is_dropped_by_mining(fake_sdk, tmp_path: Path) -> None:

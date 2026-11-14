@@ -287,7 +287,11 @@ class AgentHarness:
             result: AgentResult | None = None
             while machine.phase == Phase.RUNNING:
                 try:
-                    pre = self._prefilter_decision(system_prompt, user_message) if machine.model_attempt == 1 else None
+                    pre = (
+                        self._prefilter_decision(system_prompt, user_message, prior_messages or [])
+                        if machine.model_attempt == 1
+                        else None
+                    )
                     if pre is not None:
                         raw, input_tok, output_tok = json.dumps(pre.data), 0, 0
                     else:
@@ -449,7 +453,15 @@ class AgentHarness:
         est_in = (len(system) + self._messages_chars(messages)) / CHARS_PER_TOKEN
         return est_in / 1_000_000 * inp + self.config.max_tokens / 1_000_000 * out
 
-    def _prefilter_decision(self, system: str, user: str) -> PreFilterDecision | None:
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str:
+        """Text of a message for scanning. Non-str content is scanned as JSON text (unescaped) so nothing is skipped."""
+        content = message.get("content", "")
+        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+    def _prefilter_decision(
+        self, system: str, user: str, history: list[dict[str, Any]] | None = None
+    ) -> PreFilterDecision | None:
         """Return a decision only when the model may be skipped.
 
         A flagged input always returns None so the model is called. A prefilter
@@ -457,7 +469,8 @@ class AgentHarness:
         """
         if self.config.prefilter is None or self.config.prefilter_skip_threshold is None:
             return None
-        if find_injection_markers(system) or find_injection_markers(user):
+        scanned = [system, user, *(self._message_text(m) for m in list(history or []))]
+        if any(find_injection_markers(text) for text in scanned):
             return None
         try:
             decision = self.config.prefilter(system, user)

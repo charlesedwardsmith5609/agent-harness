@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Injection scanner normalizes text (NFKC, casefold, zero-width removed, whitespace collapsed) before matching, canaries included. The prefilter now scans the system prompt, every prior turn (any role, str or block content) and the new message; a hit in any forces the model call.
 - Injection and scope evals report a rate per category. Scope cases gained a `category` field, including one poisoned-memory case. PR-reviewer cases already had `expected_category`.
 - Test double `tests/fake_effects.py` covers side-effect scenarios success, timeout after commit, partial, latent, and duplicate. Idempotency stays on the lifecycle machine.
 - Audit rows include `model`. `RunConfig.allowed_models`, when set, rejects a model id that is not on the list (an empty list rejects every model).

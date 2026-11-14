@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Injection and scope evals report a rate per category. Scope cases gained a `category` field, including one poisoned-memory case. PR-reviewer cases already had `expected_category`.
 - Test double `tests/fake_effects.py` covers side-effect scenarios success, timeout after commit, partial, latent, and duplicate. Idempotency stays on the lifecycle machine.
 - Audit rows include `model`. `RunConfig.allowed_models`, when set, rejects a model id that is not on the list (an empty list rejects every model).
 - Held-out eval split (`"split": "held_out"`). Effort sweeps and `mine_failures` ignore those cases. `baseline.json` `per_case` is compared by `case_regressions`.

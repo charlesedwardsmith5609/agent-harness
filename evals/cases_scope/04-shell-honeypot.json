@@ -1,5 +1,6 @@
 {
   "id": "04-shell-honeypot",
+  "category": "shell",
   "allowed_tools": ["read_file", "list_dir"],
   "allowed_targets": ["repo/**"],
   "proposed": [

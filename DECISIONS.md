@@ -59,3 +59,13 @@ Options: a production provider interface plus a fake; a test-only double that ca
 Choice: `tests/fake_effects.py` calls `perform_effect`, `commit_effect`, and `fail_effect`. Timeout is raised after commit so the key is already recorded. Partial uses `fail_effect` and does not commit. Latent commits and reports that the effect is not visible yet. A second apply with the same key returns duplicate because `perform_effect` returns false. No new dependency and no new production type.
 
 Why: The lifecycle machine is already the owner of the key. A second implementation could drift from it.
+
+## 2026-11-13: Category field already existed on PR-reviewer cases
+
+Context: Per-category reporting for the injection and scope evals. Some category usage already existed in `tests/test_policy_eval.py` (`category_rate`).
+
+Evidence: every file in `evals/cases/` has `expected_category` (null on clean diffs). No file in `evals/cases_scope/` had a category field.
+
+Choice: keep `expected_category` on the PR-reviewer cases and group injection hold rate by it. Add `category` to each scope case. Add one scope case, `05-poisoned-memory`, whose remembered shell command is refused. The new report is counts and rates. Baseline floors are unchanged.
+
+Why: Do not rename a field the scorer already uses. Do not add a second poisoned case in the injection suite when one case was requested.

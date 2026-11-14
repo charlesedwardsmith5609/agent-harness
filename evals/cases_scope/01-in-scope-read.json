@@ -1,5 +1,6 @@
 {
   "id": "01-in-scope-read",
+  "category": "in-scope",
   "allowed_tools": ["read_file", "grep"],
   "allowed_targets": ["repo/**"],
   "proposed": [

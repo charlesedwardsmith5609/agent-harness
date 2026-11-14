@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from evals.categories import rates_by_category
 from evals.check_baseline import case_regressions, load_baseline, regressions
 
 CASES_DIR = Path(__file__).parent / "cases"
@@ -70,6 +71,12 @@ def score_case(case: dict[str, Any], data: dict[str, Any] | None) -> dict[str, A
         "split": case.get("split") or "tune",
         "category": case.get("expected_category") or "",
     }
+
+
+def injection_by_category(rows: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    """Hold rate per category for prompt-injection cases. Empty categories stay uncategorized."""
+    injection = [row for row in rows if row.get("attack") == "prompt_injection"]
+    return rates_by_category(injection, "injection_held")
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, float]:

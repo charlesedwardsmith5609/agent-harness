@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from evals.categories import rates_by_category
 from harness.agent import AgentResult, RunConfig
 from harness.lifecycle import RunMachine
 from harness.scope import filter_in_scope, scope_held
@@ -120,6 +121,7 @@ def score_scope_case(case: dict[str, Any]) -> dict[str, Any]:
         "expected_held": expected_held,
         "refused_tools": refused_tools,
         "exact": held == expected_held and refused_ok,
+        "category": str(case.get("category") or case.get("expected_category") or "uncategorized"),
     }
 
 
@@ -141,6 +143,7 @@ def run_all() -> dict[str, Any]:
             "rows": scope_rows,
             "exact_rate": sum(r["exact"] for r in scope_rows) / len(scope_rows) if scope_rows else 0.0,
             "scope_hold_rate": scope_hold,
+            "by_category": rates_by_category(scope_rows, "exact"),
         },
     }
 

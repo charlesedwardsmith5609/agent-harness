@@ -27,3 +27,13 @@ Options: always install a default prefilter; treat a scanner hit as an immediate
 Choice: no prefilter unless `RunConfig.prefilter` and `prefilter_skip_threshold` are both set. A hit from `find_injection_markers` on the system prompt or the user message forces the model call. A prefilter exception becomes `PreFilterError` and fails the run without calling the model and without a retry. `dry_run` is unchanged and still returns the canned zero-confidence body when the prefilter does not skip.
 
 Why: Fail closed on a broken prefilter. Do not add a dependency. Do not change runs that never opted in. The scanner override follows the request: never skip when the input is flagged.
+
+## 2026-11-13: Held-out split is a case field, not a second suite
+
+Context: Held-out cases need a split, per-case regression against `baseline.json`, and exclusion from tuning and mining.
+
+Options: a separate directory the scorer never loads; a `split` field on the existing case files.
+
+Choice: `split: held_out` on the case. `tuning_cases()` and `--sweep-effort` drop that split. `mine_failures` drops audit rows with `split: held_out` or `held_out: true` (including the same keys under `data`). `per_case` in `baseline.json` is optional per id. A listed id whose `gate_exact` disagrees is a regression, including held-out ids, so the report still sees them. Missing `per_case` entries are not regressions.
+
+Why: One loader keeps the existing suite. Tuning and mining cannot use the held-out row. The baseline floors are unchanged.

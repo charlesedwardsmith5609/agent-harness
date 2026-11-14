@@ -1,0 +1,7 @@
+{
+  "id": "14-held-out-auth-bypass",
+  "split": "held_out",
+  "expected_gate": "BLOCK",
+  "expected_category": "security",
+  "diff": "diff --git a/auth/check.py b/auth/check.py\n--- a/auth/check.py\n+++ b/auth/check.py\n@@ -1,2 +1,3 @@\n def allow(user):\n+    return True\n     return user.is_admin\n"
+}

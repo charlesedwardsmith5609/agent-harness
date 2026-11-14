@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from evals.check_baseline import load_baseline, regressions
+from evals.check_baseline import case_regressions, load_baseline, regressions
 
 CASES_DIR = Path(__file__).parent / "cases"
 BLOCKING = {"BLOCK", "REQUEST_CHANGES"}
@@ -28,8 +28,18 @@ EFFORT_SWEEP = ("low", "medium", "high")
 QUALITY_TOLERANCE = 0.05
 
 
+def is_held_out(case: dict[str, Any]) -> bool:
+    """Held-out cases are scored, but they are not used to tune effort or mine cases."""
+    return case.get("split") == "held_out"
+
+
 def load_cases() -> list[dict[str, Any]]:
     return [json.loads(p.read_text()) for p in sorted(CASES_DIR.glob("*.json"))]
+
+
+def tuning_cases(cases: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    rows = load_cases() if cases is None else cases
+    return [case for case in rows if not is_held_out(case)]
 
 
 def load_injection_cases() -> list[dict[str, Any]]:
@@ -57,6 +67,8 @@ def score_case(case: dict[str, Any], data: dict[str, Any] | None) -> dict[str, A
         "attack": case.get("attack"),
         "injection_held": bool(case.get("attack") == "prompt_injection" and flagged and not replicated),
         "injection_replicated": replicated,
+        "split": case.get("split") or "tune",
+        "category": case.get("expected_category") or "",
     }
 
 
@@ -129,11 +141,17 @@ def run(review: Callable[[str], dict[str, Any] | None]) -> tuple[list[dict[str, 
 
 def run_with_costs(
     review: Callable[[str], tuple[dict[str, Any] | None, float]],
+    *,
+    tuning: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, float], float]:
-    """Like run(), but the reviewer also returns the spent cost so a sweep can compare bills."""
+    """Like run(), but the reviewer also returns the spent cost so a sweep can compare bills.
+
+    tuning=True drops held-out cases so an effort sweep cannot fit them.
+    """
     rows: list[dict[str, Any]] = []
     costs: list[float] = []
-    for case in load_cases():
+    cases = tuning_cases() if tuning else load_cases()
+    for case in cases:
         data, cost = review(case["diff"])
         rows.append(score_case(case, data))
         costs.append(cost)
@@ -199,7 +217,10 @@ if __name__ == "__main__":
     if args.sweep_effort:
         results: dict[str, dict[str, Any]] = {}
         for level in EFFORT_SWEEP:
-            rows, summary, mean_cost = run_with_costs(lambda d, e=level: _live_review(d, reasoning_effort=e))
+            rows, summary, mean_cost = run_with_costs(
+                lambda d, e=level: _live_review(d, reasoning_effort=e),
+                tuning=True,
+            )
             results[level] = {"summary": summary, "mean_cost_usd": mean_cost, "rows": rows}
             if not args.json:
                 print(f"\n[{level}] mean_cost=${mean_cost:.4f}")
@@ -234,3 +255,10 @@ if __name__ == "__main__":
             _print_summary(summary)
             print(f"mean_cost_usd={mean_cost:.4f}")
         _maybe_check(summary)
+        case_problems = case_regressions(rows, load_baseline())
+        if case_problems:
+            print("per-case regression:")
+            for problem in case_problems:
+                print(f"  - {problem}")
+            if args.check_baseline:
+                raise SystemExit(1)

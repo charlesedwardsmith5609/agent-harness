@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-02
 
+- Held-out eval split (`"split": "held_out"`). Effort sweeps and `mine_failures` ignore those cases. `baseline.json` `per_case` is compared by `case_regressions`.
 - Optional prefilter (`RunConfig.prefilter` and `prefilter_skip_threshold`) can skip the model when confidence is high enough. An injection-scanner hit on the system prompt or user message always calls the model. Audit rows include `llm_skipped`.
 - Mine recurring audit failures into candidate cases (`python -m evals.mine_failures`). Candidates stay out of `evals/cases/` and the baseline. Schema errors and refused PR comments are marked on the final audit row.
 - Audit rows include `agent_scope` (caller, intent, allowed tools). `allowed_tools` null means the scope was not set; `[]` means no tools are allowed. Rows written before this field still read.

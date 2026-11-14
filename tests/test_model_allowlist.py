@@ -78,18 +78,19 @@ def test_audit_records_the_model_that_ran(fake_sdk, tmp_path):
     assert row["llm_skipped"] is False
 
 
+def _confident_prefilter(system: str, user: str) -> PreFilterDecision:
+    return PreFilterDecision(
+        confidence=0.95, reason="clear", data={"confidence": 0.95, "reasoning": "p", "findings": []}
+    )
+
+
 def test_audit_says_no_model_ran_when_the_prefilter_skipped(fake_sdk, tmp_path):
     log = tmp_path / "audit.jsonl"
-
-    def confident(system: str, user: str) -> PreFilterDecision:
-        return PreFilterDecision(
-            confidence=0.95, reason="clear", data={"confidence": 0.95, "reasoning": "p", "findings": []}
-        )
 
     config = RunConfig(
         agent_name="t",
         audit_log_path=str(log),
-        prefilter=confident,
+        prefilter=_confident_prefilter,
         prefilter_skip_threshold=0.5,
         min_confidence=0.0,
     )

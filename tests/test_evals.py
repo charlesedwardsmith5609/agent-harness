@@ -173,6 +173,22 @@ def _perfect_live(diff, reasoning_effort=None):
     return _perfect(diff), 0.01
 
 
+def _miss_held_out_live(diff, reasoning_effort=None):
+    for case in load_cases():
+        if case["diff"] == diff and case.get("split") == "held_out":
+            return {"gate_decision": "wrong", "findings": []}, 0.0
+    return _perfect(diff), 0.0
+
+
+def _broken_scope_report():
+    report = _REAL_RUN_ALL()
+    report["scope"]["exact_rate"] = 0.5
+    return report
+
+
+_REAL_RUN_ALL = run_policy_eval.run_all
+
+
 def test_run_eval_json_regression_text_goes_to_stderr(monkeypatch, capsys):
     monkeypatch.setattr(run_eval, "_live_review", _miss_everything)
     with pytest.raises(SystemExit) as exit_info:
@@ -184,17 +200,13 @@ def test_run_eval_json_regression_text_goes_to_stderr(monkeypatch, capsys):
 
 
 def test_run_eval_json_per_case_regression_goes_to_stderr(monkeypatch, capsys):
-    def miss_held_out(diff, reasoning_effort=None):
-        for case in load_cases():
-            if case["diff"] == diff and case.get("split") == "held_out":
-                return {"gate_decision": "wrong", "findings": []}, 0.0
-        return _perfect(diff), 0.0
-
-    monkeypatch.setattr(run_eval, "_live_review", miss_held_out)
+    monkeypatch.setattr(run_eval, "_live_review", _miss_held_out_live)
     run_eval.main(["--json"])
     captured = capsys.readouterr()
-    json.loads(captured.out)
+    payload = json.loads(captured.out)
+    assert set(payload) == {"rows", "summary", "mean_cost_usd"}
     assert "per-case regression" in captured.err
+    assert "per-case regression" not in captured.out
 
 
 def test_run_eval_sweep_json_is_pure_json(monkeypatch, capsys):
@@ -209,17 +221,14 @@ def test_run_eval_sweep_json_is_pure_json(monkeypatch, capsys):
 
 
 def test_run_eval_sweep_json_held_out_regression_goes_to_stderr(monkeypatch, capsys):
-    def miss_held_out(diff, reasoning_effort=None):
-        for case in load_cases():
-            if case["diff"] == diff and case.get("split") == "held_out":
-                return {"gate_decision": "wrong", "findings": []}, 0.0
-        return _perfect(diff), 0.0
-
-    monkeypatch.setattr(run_eval, "_live_review", miss_held_out)
+    monkeypatch.setattr(run_eval, "_live_review", _miss_held_out_live)
     run_eval.main(["--sweep-effort", "--json"])
     captured = capsys.readouterr()
-    json.loads(captured.out)
+    payload = json.loads(captured.out)
+    assert "chosen_effort" in payload
+    assert "per-case regression" in captured.err
     assert "14-held-out-auth-bypass" in captured.err
+    assert "14-held-out-auth-bypass" not in captured.out
 
 
 def test_run_eval_text_mode_keeps_diagnostics_on_stdout(monkeypatch, capsys):
@@ -238,15 +247,11 @@ def test_run_policy_eval_json_is_pure_json(capsys):
 
 
 def test_run_policy_eval_json_failure_text_goes_to_stderr(monkeypatch, capsys):
-    real = run_policy_eval.run_all
-
-    def broken():
-        report = real()
-        report["scope"]["exact_rate"] = 0.5
-        return report
-
-    monkeypatch.setattr(run_policy_eval, "run_all", broken)
+    monkeypatch.setattr(run_policy_eval, "run_all", _broken_scope_report)
     assert run_policy_eval.main(["--json"]) == 1
     captured = capsys.readouterr()
-    json.loads(captured.out)
-    assert "scope" in captured.err
+    report = json.loads(captured.out)
+    assert report["scope"]["exact_rate"] == 0.5
+    assert "policy eval below 1.0: scope" in captured.err
+    assert "deploy" not in captured.err
+    assert "below 1.0" not in captured.out

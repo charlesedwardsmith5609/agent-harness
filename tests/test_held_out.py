@@ -157,20 +157,27 @@ def test_scored_row_without_baseline_entry_still_passes() -> None:
     assert case_regressions(rows, baseline) == []
 
 
-def test_sweep_reports_held_out_regression_without_tuning_on_it() -> None:
-    seen: list[str] = []
+class _MissHeldOut:
+    """Reviewer that gets every held-out case wrong and records which ones it was shown."""
 
-    def miss_held_out(diff: str):
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def __call__(self, diff: str):
         for case in load_cases():
             if case["diff"] == diff and is_held_out(case):
-                seen.append(case["id"])
+                self.seen.append(case["id"])
                 return {"gate_decision": "wrong", "findings": []}, 0.0
         return _perfect(diff), 0.0
 
+
+def test_sweep_reports_held_out_regression_without_tuning_on_it() -> None:
+    miss_held_out = _MissHeldOut()
+
     tuning_rows, _summary, _cost = run_with_costs(miss_held_out, tuning=True)
-    assert seen == []  # tuning never reviewed a held-out case
+    assert miss_held_out.seen == []  # tuning never reviewed a held-out case
     assert all(not is_held_out(case) for case in tuning_cases())
     problems = held_out_problems(miss_held_out, load_baseline())
     assert any("14-held-out-auth-bypass" in problem for problem in problems)
-    assert seen == [case["id"] for case in held_out_cases()]
+    assert miss_held_out.seen == [case["id"] for case in held_out_cases()]
     assert held_out_problems(lambda diff: (_perfect(diff), 0.0), load_baseline()) == []

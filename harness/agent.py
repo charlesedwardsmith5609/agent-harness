@@ -138,6 +138,8 @@ class RunConfig:
     # above prefilter_skip_threshold. None means the model is always called.
     prefilter: Any = None
     prefilter_skip_threshold: float | None = None
+    # When set, the run is refused unless model is on this list. Empty rejects all.
+    allowed_models: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -163,6 +165,11 @@ class RunConfig:
             self.allowed_tools = tools
         if self.prefilter_skip_threshold is not None and not 0.0 <= self.prefilter_skip_threshold <= 1.0:
             raise ValueError("prefilter_skip_threshold must be between 0 and 1")
+        if self.allowed_models is not None:
+            model_allowlist = [str(item).strip() for item in self.allowed_models if str(item).strip()]
+            if self.model not in model_allowlist:
+                raise ValueError(f"model {self.model!r} is not on the allowlist")
+            self.allowed_models = model_allowlist
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()

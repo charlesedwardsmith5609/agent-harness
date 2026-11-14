@@ -37,3 +37,15 @@ Options: a separate directory the scorer never loads; a `split` field on the exi
 Choice: `split: held_out` on the case. `tuning_cases()` and `--sweep-effort` drop that split. `mine_failures` drops audit rows with `split: held_out` or `held_out: true` (including the same keys under `data`). `per_case` in `baseline.json` is optional per id. A listed id whose `gate_exact` disagrees is a regression, including held-out ids, so the report still sees them. Missing `per_case` entries are not regressions.
 
 Why: One loader keeps the existing suite. Tuning and mining cannot use the held-out row. The baseline floors are unchanged.
+
+## 2026-11-13: Model allowlist is config-driven
+
+Context: Every audit row should carry the model id, and a model id off the allowlist should fail closed.
+
+Evidence: `AgentResult.model` is already copied into the audit JSON. The field name stays `model`.
+
+Options: reject every run until an allowlist file exists in the repo; reject only when the operator sets `allowed_models`.
+
+Choice: an unset `allowed_models` does not add a second gate. A set list must contain `model`. An empty list rejects every model. No new model ids were added.
+
+Why: Shipping an empty or guessed allowlist would fail every current caller, or would invent model ids. The operator's list is the fail-closed control.

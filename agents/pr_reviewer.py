@@ -195,6 +195,7 @@ def settle_review(result: AgentResult, *, truncated: bool) -> None:
         validate_review_evidence(result.data)
         decision, reason = pr_decision(result.data.get("findings"), truncated=truncated)
     except EvidenceError as exc:
+        result.data["evidence_error"] = str(exc)
         decision, reason = "BLOCK", str(exc)
     result.data["gate_decision"] = decision
     result.data["gate_policy_reason"] = reason
@@ -293,6 +294,7 @@ def review_diff(
         user_message=user_message,
         context={"github.repo": repo, "github.pr_number": pr_number},
     )
+    result._harness = harness  # type: ignore[attr-defined]
     # The policy owns the gate. A partial diff cannot approve: unseen code is not reviewed.
     settle_review(result, truncated=truncated)
     if harness is not None and result.lifecycle is not None:
@@ -345,10 +347,14 @@ def review_pr(
         try:
             refuse_if_replicated(comment)
         except InjectionReplicationError as exc:
+            # Keep the gate decision; only the side effect is refused. Re-audit so the
+            # hold is on the final row (review_diff already wrote the pre-comment snapshot).
             result.data["comment_blocked"] = str(exc)
-            if life is not None and life.phase.value != "done":
-                # Keep the gate decision; only the side effect is refused.
-                result.data["comment_blocked"] = str(exc)
+            held = getattr(result, "_harness", None)
+            if held is not None:
+                if life is not None:
+                    held.save_lifecycle(life)
+                held.audit(result)
             return result
         if life is not None and life.perform_effect("pr-comment", key, mutating=False):
             post_pr_comment(pr_number=pr_number, repo=repo, token=token, body=comment)

@@ -34,6 +34,9 @@ harness = ["effort_defaults.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Bare `pytest` (as CI runs it) does not put the repo root on sys.path, so `tests` and `evals`
+# were not importable; `python -m pytest` happened to work.
+pythonpath = ["."]
 addopts = "--cov=harness --cov=agents --cov-fail-under=70"
 
 [tool.coverage.run]

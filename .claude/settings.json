@@ -1,0 +1,17 @@
+{
+  "disableClaudeAiConnectors": true,
+  "enableArtifact": false,
+  "permissions": {
+    "ask": ["WebFetch"],
+    "deny": [
+      "Read(//proc/**/environ)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(//var/run/secrets/**)",
+      "Bash(curl *169.254.169.254*)",
+      "Bash(wget *169.254.169.254*)",
+      "Bash(curl *metadata.google.internal*)",
+      "Bash(wget *metadata.google.internal*)"
+    ]
+  }
+}

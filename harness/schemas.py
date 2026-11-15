@@ -6,6 +6,7 @@ Malformed evidence fails closed (caller maps the error to HOLD / BLOCK).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -74,3 +75,52 @@ def validate_runbook_evidence(data: dict[str, Any]) -> None:
         raise EvidenceError("diagnosis_steps must be a list")
     if remediation is not None and not isinstance(remediation, list):
         raise EvidenceError("remediation must be a list")
+
+
+@dataclass(frozen=True)
+class AgentScope:
+    """Who ran, which intent, and which tools were allowed for one audit row.
+
+    `allowed_tools` is None when the caller did not set a scope. An empty list
+    means the scope was set and no tools are allowed.
+    """
+
+    caller: str | None
+    intent: str | None
+    allowed_tools: list[str] | None
+
+    def to_dict(self) -> dict[str, Any]:
+        tools = None if self.allowed_tools is None else list(self.allowed_tools)
+        return {"caller": self.caller, "intent": self.intent, "allowed_tools": tools}
+
+
+def read_agent_scope(record: dict[str, Any]) -> AgentScope:
+    """Read `agent_scope` from an audit row.
+
+    Rows written before the field existed fall back to top-level `caller_identity`
+    with unknown intent and unknown tool scope.
+    """
+    if not isinstance(record, dict):
+        raise EvidenceError("audit record must be an object")
+    fallback = _optional_text(record.get("caller_identity"))
+    raw = record.get("agent_scope")
+    if not isinstance(raw, dict):
+        return AgentScope(caller=fallback, intent=None, allowed_tools=None)
+    caller = _optional_text(raw.get("caller")) if "caller" in raw else None
+    if caller is None:
+        caller = fallback
+    intent = _optional_text(raw.get("intent")) if "intent" in raw else None
+    if "allowed_tools" not in raw or raw.get("allowed_tools") is None:
+        tools: list[str] | None = None
+    elif isinstance(raw.get("allowed_tools"), list):
+        tools = [item.strip() for item in raw["allowed_tools"] if isinstance(item, str) and item.strip()]
+    else:
+        tools = None
+    return AgentScope(caller=caller, intent=intent, allowed_tools=tools)
+
+
+def _optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None

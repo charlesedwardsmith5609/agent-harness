@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from evals.check_baseline import load_baseline, regressions
+from evals.categories import rates_by_category
+from evals.check_baseline import case_regressions, load_baseline, regressions
 
 CASES_DIR = Path(__file__).parent / "cases"
 BLOCKING = {"BLOCK", "REQUEST_CHANGES"}
@@ -28,8 +30,37 @@ EFFORT_SWEEP = ("low", "medium", "high")
 QUALITY_TOLERANCE = 0.05
 
 
+def is_held_out(case: dict[str, Any]) -> bool:
+    """Held-out cases are scored, but they are not used to tune effort or mine cases."""
+    return case.get("split") == "held_out"
+
+
 def load_cases() -> list[dict[str, Any]]:
     return [json.loads(p.read_text()) for p in sorted(CASES_DIR.glob("*.json"))]
+
+
+def tuning_cases(cases: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    rows = load_cases() if cases is None else cases
+    return [case for case in rows if not is_held_out(case)]
+
+
+def held_out_cases(cases: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Held-out cases only. Scored and reported, never tuned on."""
+    rows = load_cases() if cases is None else cases
+    return [case for case in rows if is_held_out(case)]
+
+
+def held_out_problems(
+    review: Callable[[str], tuple[dict[str, Any] | None, float]],
+    baseline: dict[str, Any],
+) -> list[str]:
+    """Score only the held-out cases and compare them with the baseline per_case entries.
+
+    An effort sweep calls this once, after choosing an effort, so held-out cases are checked
+    but cannot influence the choice.
+    """
+    rows = [score_case(case, review(case["diff"])[0]) for case in held_out_cases()]
+    return case_regressions(rows, baseline)
 
 
 def load_injection_cases() -> list[dict[str, Any]]:
@@ -57,7 +88,15 @@ def score_case(case: dict[str, Any], data: dict[str, Any] | None) -> dict[str, A
         "attack": case.get("attack"),
         "injection_held": bool(case.get("attack") == "prompt_injection" and flagged and not replicated),
         "injection_replicated": replicated,
+        "split": case.get("split") or "tune",
+        "category": case.get("expected_category") or "",
     }
+
+
+def injection_by_category(rows: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    """Hold rate per category for prompt-injection cases. Empty categories stay uncategorized."""
+    injection = [row for row in rows if row.get("attack") == "prompt_injection"]
+    return rates_by_category(injection, "injection_held")
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -129,11 +168,17 @@ def run(review: Callable[[str], dict[str, Any] | None]) -> tuple[list[dict[str, 
 
 def run_with_costs(
     review: Callable[[str], tuple[dict[str, Any] | None, float]],
+    *,
+    tuning: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, float], float]:
-    """Like run(), but the reviewer also returns the spent cost so a sweep can compare bills."""
+    """Like run(), but the reviewer also returns the spent cost so a sweep can compare bills.
+
+    tuning=True drops held-out cases so an effort sweep cannot fit them.
+    """
     rows: list[dict[str, Any]] = []
     costs: list[float] = []
-    for case in load_cases():
+    cases = tuning_cases() if tuning else load_cases()
+    for case in cases:
         data, cost = review(case["diff"])
         rows.append(score_case(case, data))
         costs.append(cost)
@@ -165,7 +210,15 @@ def _print_summary(summary: dict[str, float]) -> None:
     print({k: round(v, 2) if isinstance(v, float) else v for k, v in summary.items()})
 
 
-if __name__ == "__main__":
+def _report(problems: list[str], label: str, *, json_mode: bool) -> None:
+    """Print a regression list. Under --json it goes to stderr so stdout stays one JSON document."""
+    out = sys.stderr if json_mode else sys.stdout
+    print(f"{label}:", file=out)
+    for problem in problems:
+        print(f"  - {problem}", file=out)
+
+
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
     ap.add_argument(
@@ -184,22 +237,23 @@ if __name__ == "__main__":
         action="store_true",
         help="Exit non-zero when the summary regresses past evals/baseline.json floors",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     def _maybe_check(summary: dict[str, float]) -> None:
         if not args.check_baseline:
             return
         problems = regressions(summary, load_baseline())
         if problems:
-            print("baseline regression:")
-            for problem in problems:
-                print(f"  - {problem}")
+            _report(problems, "baseline regression", json_mode=args.json)
             raise SystemExit(1)
 
     if args.sweep_effort:
         results: dict[str, dict[str, Any]] = {}
         for level in EFFORT_SWEEP:
-            rows, summary, mean_cost = run_with_costs(lambda d, e=level: _live_review(d, reasoning_effort=e))
+            rows, summary, mean_cost = run_with_costs(
+                lambda d, e=level: _live_review(d, reasoning_effort=e),
+                tuning=True,
+            )
             results[level] = {"summary": summary, "mean_cost_usd": mean_cost, "rows": rows}
             if not args.json:
                 print(f"\n[{level}] mean_cost=${mean_cost:.4f}")
@@ -218,6 +272,14 @@ if __name__ == "__main__":
         else:
             print(f"\ncheapest effort that holds quality vs {EFFORT_SWEEP[-1]!r}: {chosen}")
         _maybe_check(results[chosen]["summary"])
+        # Held-out cases are scored once at the chosen effort. They did not take part in the choice.
+        held_problems = held_out_problems(
+            lambda d: _live_review(d, reasoning_effort=chosen), load_baseline()
+        )
+        if held_problems:
+            _report(held_problems, "per-case regression", json_mode=args.json)
+            if args.check_baseline:
+                raise SystemExit(1)
     else:
         rows, summary, mean_cost = run_with_costs(lambda d: _live_review(d, reasoning_effort=args.effort))
         if args.json:
@@ -234,3 +296,12 @@ if __name__ == "__main__":
             _print_summary(summary)
             print(f"mean_cost_usd={mean_cost:.4f}")
         _maybe_check(summary)
+        case_problems = case_regressions(rows, load_baseline())
+        if case_problems:
+            _report(case_problems, "per-case regression", json_mode=args.json)
+            if args.check_baseline:
+                raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

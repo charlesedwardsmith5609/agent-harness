@@ -115,9 +115,9 @@ print(json.dumps(req))
 PY
 )
   if [ "$REVIEW_USED_PROVIDER" = openai ]; then
-    resp=$(printf '%s' "$body" | curl -sS "$url" -H "Authorization: Bearer $key" -H "Content-Type: application/json" --data-binary @-)
+    resp=$(printf '%s' "$body" | curl -sS --connect-timeout 15 --max-time "${REVIEW_CURL_MAX_TIME:-300}" "$url" -H "Authorization: Bearer $key" -H "Content-Type: application/json" --data-binary @-)
   else
-    resp=$(printf '%s' "$body" | curl -sS "$url" -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" --data-binary @-)
+    resp=$(printf '%s' "$body" | curl -sS --connect-timeout 15 --max-time "${REVIEW_CURL_MAX_TIME:-300}" "$url" -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" --data-binary @-)
   fi
   REVIEW_RESP="$resp" python3 - <<'PY'
 import json, os, sys

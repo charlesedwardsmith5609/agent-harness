@@ -112,6 +112,7 @@ if [ "$has_test" -eq 1 ] && [ "$has_source" -eq 0 ]; then
 fi
 
 # --- Plan scope (only when ## Files is parseable) ---
+# Uses raw_file so deleted paths outside the plan are reported too.
 plan=""
 # shellcheck disable=SC2012
 plan=$(ls plans/step-*.md 2>/dev/null | sort -V | tail -n 1 || true)
@@ -141,7 +142,7 @@ else
       if ! grep -Fxq "$path" "$allowed_file"; then
         report "path outside plan ## Files: $path"
       fi
-    done < "$changed_file"
+    done < "$raw_file"
   fi
 fi
 

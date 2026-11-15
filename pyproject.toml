@@ -23,7 +23,7 @@ dev = [
     "pytest>=7",
     "pytest-cov",
     "ruff>=0.6",
-    "mypy>=1.11",
+    "mypy>=2.4.1",
 ]
 
 [tool.setuptools.packages.find]

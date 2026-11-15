@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from harness.budget import BudgetExceeded, check_daily_budget
+from harness.injection import find_injection_markers
 from harness.lifecycle import ModelOutputError, Phase, RunMachine, is_model_retryable
+from harness.prefilter import PreFilterDecision, PreFilterError
 from harness.schemas import AgentScope
 from harness.store import LifecycleStore
 
@@ -85,6 +87,11 @@ class AgentResult:
     lifecycle: RunMachine | None = None  # Authoritative phase; not decided by the model
     # Prior turns + this turn's assistant reply (for multi-turn / message-thread resumes).
     messages: list[dict[str, Any]] | None = None
+    # True when the prefilter's confidence was high enough to skip the model call.
+    llm_skipped: bool = False
+    # The model that actually answered. None when no model ran (prefilter skip, dry run, or
+    # a call that never completed). `model` is the configured request and may differ.
+    model_ran: str | None = None
 
     def passed(self) -> bool:
         return self.success and self.gate_passed
@@ -98,6 +105,12 @@ class AgentResult:
         if self.messages is not None:
             data["message_count"] = len(self.messages)
         return data
+
+
+def check_model_allowed(model: str, allowed: list[str] | None) -> None:
+    """Raise unless `model` is on the allowlist. None means no allowlist; an empty list rejects all."""
+    if allowed is not None and model not in allowed:
+        raise ValueError(f"model {model!r} is not on the allowlist")
 
 
 @dataclass
@@ -130,6 +143,15 @@ class RunConfig:
     # allowed_tools=[] means the caller set a scope that permits no tools.
     intent: str | None = None
     allowed_tools: list[str] | None = None
+    # Optional cheap decision. Skip the model only when its confidence is at or
+    # above prefilter_skip_threshold. None means the model is always called.
+    prefilter: Any = None
+    prefilter_skip_threshold: float | None = None
+    # When set, the run is refused unless model is on this list. Empty rejects all.
+    allowed_models: list[str] | None = None
+    # Set by the harness owner for held-out eval runs. Written to the audit row so
+    # mining can skip it. Never read from model output.
+    held_out: bool = False
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -153,6 +175,12 @@ class RunConfig:
                     seen.add(name)
                     tools.append(name)
             self.allowed_tools = tools
+        if self.prefilter_skip_threshold is not None and not 0.0 <= self.prefilter_skip_threshold <= 1.0:
+            raise ValueError("prefilter_skip_threshold must be between 0 and 1")
+        if self.allowed_models is not None:
+            model_allowlist = [str(item).strip() for item in self.allowed_models if str(item).strip()]
+            check_model_allowed(self.model, model_allowlist)
+            self.allowed_models = model_allowlist
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()
@@ -268,13 +296,28 @@ class AgentHarness:
             total_out = 0
             total_cost = 0.0
             result: AgentResult | None = None
+            model_ran: str | None = None
             while machine.phase == Phase.RUNNING:
                 try:
-                    raw, input_tok, output_tok = self._call_api(system_prompt, transcript)
+                    pre = (
+                        self._prefilter_decision(system_prompt, user_message, prior_messages or [])
+                        if machine.model_attempt == 1
+                        else None
+                    )
+                    if pre is not None:
+                        raw, input_tok, output_tok = json.dumps(pre.data), 0, 0
+                    else:
+                        raw, input_tok, output_tok = self._call_api(system_prompt, transcript)
+                        if not self.config.dry_run:
+                            model_ran = self.config.model
                     total_in += input_tok
                     total_out += output_tok
                     total_cost += self._calculate_cost(input_tok, output_tok)
                     data, confidence, reasoning = self._parse_response(raw)
+                    if pre is not None:
+                        # The lower of the decision's and the payload's confidence gates.
+                        # A payload with no confidence parses as 0.0 and stays fail-closed.
+                        confidence = min(confidence, pre.confidence)
                     dur = time.monotonic() - start
                     messages = list(transcript) + [{"role": "assistant", "content": raw}]
 
@@ -293,6 +336,8 @@ class AgentHarness:
                         reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                         messages=messages,
+                        llm_skipped=pre is not None,
+                        model_ran=model_ran,
                     )
                     result = self._evaluate_gates(result)
                     if self.config.dry_run:
@@ -350,6 +395,7 @@ class AgentHarness:
                         reasoning_effort=self.config.reasoning_effort,
                         lifecycle=machine,
                         messages=list(transcript),
+                        model_ran=model_ran,
                     )
 
             if result is None:
@@ -427,6 +473,37 @@ class AgentHarness:
         est_in = (len(system) + self._messages_chars(messages)) / CHARS_PER_TOKEN
         return est_in / 1_000_000 * inp + self.config.max_tokens / 1_000_000 * out
 
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str:
+        """Text of a message for scanning. Non-str content is scanned as JSON text (unescaped) so nothing is skipped."""
+        content = message.get("content", "")
+        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+    def _prefilter_decision(
+        self, system: str, user: str, history: list[dict[str, Any]] | None = None
+    ) -> PreFilterDecision | None:
+        """Return a decision only when the model may be skipped.
+
+        A flagged input always returns None so the model is called. A prefilter
+        that raises becomes PreFilterError, which is not a retryable model failure.
+        """
+        if self.config.prefilter is None or self.config.prefilter_skip_threshold is None:
+            return None
+        scanned = [system, user, *(self._message_text(m) for m in list(history or []))]
+        if any(find_injection_markers(text) for text in scanned):
+            return None
+        try:
+            decision = self.config.prefilter(system, user)
+        except PreFilterError:
+            raise
+        except Exception as exc:
+            raise PreFilterError(str(exc)) from exc
+        if not isinstance(decision, PreFilterDecision):
+            raise PreFilterError("prefilter did not return PreFilterDecision")
+        if decision.confidence >= self.config.prefilter_skip_threshold:
+            return decision
+        return None
+
     def _call_api(self, system: str, messages: list[dict[str, Any]]) -> tuple[str, int, int]:
         """Call the Anthropic API and return (raw_text, input_tokens, output_tokens).
 
@@ -434,6 +511,7 @@ class AgentHarness:
         gated. Only an explicit RunConfig(dry_run=True) returns a canned response, and that
         response is marked DRY_RUN with zero confidence so no gate can pass on it.
         """
+        check_model_allowed(self.config.model, self.config.allowed_models)
         if self.config.dry_run:
             canned = json.dumps(
                 {
@@ -528,6 +606,7 @@ class AgentHarness:
         """
         record = {**result.to_dict(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         record["caller_identity"] = self.config.caller_identity
+        record["held_out"] = bool(self.config.held_out)
         scope = AgentScope(
             caller=self.config.caller_identity,
             intent=self.config.intent,

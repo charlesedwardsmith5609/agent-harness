@@ -22,3 +22,8 @@ evals/cases_mined/
 *.env
 secrets/
 credentials/
+.reviews/
+.pairing-setup.log
+.claude/settings.local.json
+*.pyc
+.ruff_cache/

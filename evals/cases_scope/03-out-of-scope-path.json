@@ -1,5 +1,6 @@
 {
   "id": "03-out-of-scope-path",
+  "category": "path",
   "allowed_tools": ["read_file"],
   "allowed_targets": ["repo/src/**"],
   "proposed": [

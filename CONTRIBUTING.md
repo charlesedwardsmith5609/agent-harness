@@ -9,10 +9,12 @@ Run the same checks CI runs:
 ```bash
 pip install -e ".[dev,otel]"
 ruff check .
-ruff format --check .
 mypy
 pytest
+python -m evals.run_policy_eval
 ```
+
+`bash scripts/check.sh` runs the same stages locally. The repo is not ruff-formatted, so do not run `ruff format` over it. pytest rewrites the tracked `.coverage` file; restore it with `git checkout .coverage` before committing.
 
 ## Guidelines
 

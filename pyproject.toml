@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 otel = [
-    "opentelemetry-sdk>=1.24",
+    "opentelemetry-sdk>=1.45.2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.24",
 ]
 dev = [

@@ -2,7 +2,9 @@
 
 Format follows Keep a Changelog. Dates are UTC.
 
-## [Unreleased] - 2026-11-14
+## [Unreleased] - 2026-11-16
+
+- Always-on map in `docs/always-on-agents.md`: event inbox and durable timers are missing; lifecycle snapshots are durable run state, not agent memory; `allowed_models` and scope are the permission system; idempotency keys are the nearest thing to an outbox and do not survive a new `run_id`. Question left open: should a gated approval expire?
 
 - Prefilter and injection scanner cover the full history: system prompt, every prior turn (any role, str or block content) and the new message. A marker in any of them forces the model call. The scanner normalizes text (NFKC, casefold, zero-width characters removed, whitespace collapsed) before matching, canaries included.
 - Held-out is set by the harness only (`RunConfig.held_out`, written as top-level `held_out` on every audit row). `mine_failures` ignores `data.held_out` and `data.split`. A `baseline.json` `per_case` entry marked `held_out` with no scored row fails. `--sweep-effort` scores held-out cases once at the chosen effort and reports regressions (exit 1 with `--check-baseline`) without tuning on them.

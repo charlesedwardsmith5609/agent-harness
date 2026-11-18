@@ -12,6 +12,7 @@ same idempotency key, so a second attempt cannot post a second credit note.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -44,6 +45,7 @@ _TRANSITIONS: dict[tuple[Phase, str], Phase | None] = {
     (Phase.FAILED_RETRYABLE, "retry"): None,
     (Phase.GATED, "approve"): Phase.APPROVED,
     (Phase.GATED, "close"): Phase.DONE,
+    (Phase.GATED, "expire"): Phase.DONE,
     (Phase.APPROVED, "complete"): Phase.DONE,
     (Phase.APPROVED, "fail_retryable"): Phase.FAILED_RETRYABLE,
     (Phase.APPROVED, "fail"): Phase.DONE,
@@ -55,6 +57,26 @@ _MODEL_ACTORS = frozenset({"model", "agent", "assistant", "system", "llm"})
 # ones a provider uses for "try again"; a 400 is the caller's bug and is not retried.
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 529})
 _RETRYABLE_TYPES = frozenset({"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"})
+
+
+def finite_seconds(value: object, *, name: str) -> float:
+    """A real number of seconds. Booleans, NaN, and infinities are refused."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite number of seconds")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number of seconds")
+    return number
+
+
+def _optional_seconds(data: dict[str, Any], name: str) -> float | None:
+    """Missing or null stays None. A present value must be finite."""
+    if name not in data or data[name] is None:
+        return None
+    number = finite_seconds(data[name], name=name)
+    if name == "approval_ttl_s" and number < 0:
+        raise ValueError("approval_ttl_s must be >= 0")
+    return number
 
 
 def is_model_retryable(exc: BaseException) -> bool:
@@ -126,6 +148,10 @@ class RunMachine:
     effects: dict[str, str] = field(default_factory=dict)
     effect_attempts: dict[str, int] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
+    # None means no deadline (legacy snapshot, or the caller turned it off).
+    # A harness run passes RunConfig.approval_ttl_s, whose default is 24 hours.
+    approval_ttl_s: float | None = None
+    wait_until: float | None = None
     _retry_to: Phase = field(default=Phase.RUNNING, repr=False)
     _effect_retry: tuple[str, str] | None = field(default=None, repr=False)
 
@@ -134,6 +160,12 @@ class RunMachine:
             raise ValueError("max_attempts must be >= 1")
         if self.max_effect_attempts < 1:
             raise ValueError("max_effect_attempts must be >= 1")
+        if self.approval_ttl_s is not None:
+            self.approval_ttl_s = finite_seconds(self.approval_ttl_s, name="approval_ttl_s")
+            if self.approval_ttl_s < 0:
+                raise ValueError("approval_ttl_s must be >= 0")
+        if self.wait_until is not None:
+            self.wait_until = finite_seconds(self.wait_until, name="wait_until")
 
     # ── Events ────────────────────────────────────────────────────────────
 
@@ -173,19 +205,42 @@ class RunMachine:
             self.model_attempt += 1
         self._transition("retry")
 
-    def submit_decision(self, decision: str, *, require_human: bool) -> None:
+    def expire_if_due(self, *, now: float | None = None) -> bool:
+        """Finish a gated human wait whose deadline has passed. No thread and no sleep.
+
+        Returns True when this call moved the run to done / expired.
+        """
+        if self.phase != Phase.GATED or self.wait_until is None:
+            return False
+        current = time.time() if now is None else finite_seconds(now, name="now")
+        if current < self.wait_until:
+            return False
+        self.outcome = "expired"
+        self._transition("expire", reason="approval wait elapsed")
+        return True
+
+    def submit_decision(self, decision: str, *, require_human: bool, now: float | None = None) -> None:
         """Record the decision the policy (not the model) assigned. Stays in gated."""
+        if self.expire_if_due(now=now):
+            raise TransitionError("approval wait elapsed")
         if self.phase != Phase.GATED:
             raise TransitionError(f"a decision can only be submitted from gated (currently {self.phase.value})")
         cleaned = decision.strip()
         if not cleaned:
             raise TransitionError("decision is required")
+        deadline = self.wait_until
+        if require_human and self.approval_ttl_s is not None and deadline is None:
+            current = time.time() if now is None else finite_seconds(now, name="now")
+            deadline = finite_seconds(current + self.approval_ttl_s, name="wait_until")
         self.decision = cleaned
         self.require_human = require_human
+        self.wait_until = deadline if require_human else None
         self._note("decide", reason=cleaned)
 
-    def approve(self, actor: str, note: str = "") -> None:
+    def approve(self, actor: str, note: str = "", *, now: float | None = None) -> None:
         """Record who accepted the decision. Policy rules use an actor of policy:<rule>."""
+        if self.expire_if_due(now=now):
+            raise TransitionError("approval wait elapsed")
         if self.phase != Phase.GATED:
             raise TransitionError(f"approve is not allowed from {self.phase.value}")
         if not self.decision:
@@ -196,8 +251,13 @@ class RunMachine:
         self.approval = Approval(actor=cleaned, decision=self.decision, note=note)
         self._transition("approve", actor=cleaned, reason=note)
 
-    def close(self, reason: str) -> None:
-        """Finish a gated run that was not approved. Outcome is blocked, not a pass."""
+    def close(self, reason: str, *, now: float | None = None) -> None:
+        """Finish a gated run that was not approved. Outcome is blocked, not a pass.
+
+        A wait that has already elapsed finishes as expired instead.
+        """
+        if self.expire_if_due(now=now):
+            return
         if self.phase != Phase.GATED:
             raise TransitionError(f"close is not allowed from {self.phase.value}")
         self.outcome = "blocked"
@@ -213,7 +273,7 @@ class RunMachine:
 
     # ── Side effects ──────────────────────────────────────────────────────
 
-    def perform_effect(self, name: str, key: str, *, mutating: bool) -> bool:
+    def perform_effect(self, name: str, key: str, *, mutating: bool, now: float | None = None) -> bool:
         """Reserve a side effect.
 
         Returns True if the caller should perform it, False if this key already landed.
@@ -221,22 +281,29 @@ class RunMachine:
         legal only from approved. Delivery of an already-decided result may happen
         from gated, approved, or done. Nothing is legal from running or failed-retryable:
         retry the transition first, and bring the same key.
+        A gated wait that has elapsed expires before the effect is reserved.
         """
+        self.expire_if_due(now=now)
         self._check_effect(name, key, mutating=mutating)
         if self.effects.get(name) == key:
             return False
         return True
 
-    def commit_effect(self, name: str, key: str, *, mutating: bool) -> None:
-        """Record that the effect landed. A second commit of the same key is a no-op."""
+    def commit_effect(self, name: str, key: str, *, mutating: bool, now: float | None = None) -> None:
+        """Record that the effect landed. A second commit of the same key is a no-op.
+
+        A due human wait expires first, including when this key was already recorded.
+        """
+        self.expire_if_due(now=now)
         if self.effects.get(name) == key:
             return
         self._check_effect(name, key, mutating=mutating)
         self.effects[name] = key
         self._note("effect", reason=f"{name}:{key}")
 
-    def fail_effect(self, name: str, key: str, reason: str) -> None:
+    def fail_effect(self, name: str, key: str, reason: str, *, now: float | None = None) -> None:
         """A mutating effect failed. Retry is possible only with the same key, and only up to the cap."""
+        self.expire_if_due(now=now)
         if self.phase != Phase.APPROVED:
             raise TransitionError(f"fail_effect is not allowed from {self.phase.value}")
         if not key:
@@ -333,6 +400,8 @@ class RunMachine:
             "history": list(self.history),
             "retry_to": self._retry_to.value,
             "effect_retry": effect_retry,
+            "approval_ttl_s": self.approval_ttl_s,
+            "wait_until": self.wait_until,
         }
 
     @classmethod
@@ -367,5 +436,7 @@ class RunMachine:
             history=list(data.get("history") or []),
             _retry_to=Phase(data["retry_to"]) if data.get("retry_to") else Phase.RUNNING,
             _effect_retry=effect_retry,
+            approval_ttl_s=_optional_seconds(data, "approval_ttl_s"),
+            wait_until=_optional_seconds(data, "wait_until"),
         )
         return machine

@@ -260,6 +260,19 @@ def finish_runbook(result: AgentResult) -> None:
     life.complete(CompletionCriteria(frozenset({"WRITE"}), require_human=False), gate_passed=True)
 
 
+def runbook_exit_code(result: AgentResult) -> int:
+    """0 only when the lifecycle completed a WRITE. Every other state is 1.
+
+    The CLI passes this to ``sys.exit``, including when the phase is not
+    ``approved``. ``settle_runbook`` does not complete a run, so that branch
+    is 1. A failed model call is not completed, so this is 1.
+    """
+    life = result.lifecycle
+    if life is not None and life.phase == Phase.DONE and life.outcome == "completed":
+        return 0
+    return 1
+
+
 def _runbook_accepted(result: AgentResult) -> bool:
     """True once the lifecycle has approved the entry or completed it. Confidence is not enough."""
     life = result.lifecycle
@@ -399,13 +412,14 @@ if __name__ == "__main__":
 
     life = result.lifecycle
     if life is None or life.phase != Phase.APPROVED:
+        # settle_runbook never leaves a run completed, so this is 1.
         print(md)
-        sys.exit(1)
+        sys.exit(runbook_exit_code(result))
     if args.output_md:
         key = incident.incident_id.strip()
         if not key:
             print("incident_id is required as the idempotency key for the runbook write")
-            sys.exit(1)
+            sys.exit(runbook_exit_code(result))
         try:
             if life.perform_effect("write-runbook", key, mutating=True):
                 with open(args.output_md, "w") as handle:
@@ -415,8 +429,8 @@ if __name__ == "__main__":
         except OSError as exc:
             note_effect_failure(result, "write-runbook", key, str(exc))
             print(md)
-            sys.exit(1)
+            sys.exit(runbook_exit_code(result))
     else:
         print(md)
     finish_runbook(result)
-    sys.exit(0 if life.phase == Phase.DONE and life.outcome == "completed" else 1)
+    sys.exit(runbook_exit_code(result))

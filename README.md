@@ -16,7 +16,7 @@ Built around a core principle: **agents earn trust on small, well-defined work w
 
 - **OTel instrumentation** — every agent run emits a trace span with confidence, cost, gate decision, and duration as span attributes. Plug in any OTLP-compatible backend (Honeycomb, Jaeger, Chronosphere).
 - **Cost governance** — every run reports its cost from API usage. `max_cost_usd` is enforced twice: a worst-case ceiling (estimated input plus full `max_tokens` output) blocks an expensive call *before* it is made, and the actual cost is checked after. `max_cost_usd_per_day` rolls up `cost_usd` from the audit log for that agent (the last row for each `run_id` counts, since a run may be audited more than once) and refuses the next call when the day would exceed the cap. Models are priced from `MODEL_PRICES` or a `RunConfig` override; an unpriced model is refused. `RunConfig.reasoning_effort` (`low` / `medium` / `high` / `xhigh` / `max`) is soft guidance passed as Anthropic `output_config.effort`; defaults live in `harness/effort_defaults.json`. Sweep with `--sweep-effort` before raising them.
-- **Durable lifecycle** — set `AGENT_LIFECYCLE_DIR` (or `RunConfig.lifecycle_dir`) to persist phase / effects / approval per `run_id`. Resume with `harness.run(..., run_id=...)`.
+- **Durable lifecycle** — set `AGENT_LIFECYCLE_DIR` (or `RunConfig.lifecycle_dir`) to persist phase / effects / approval per `run_id`. Resume with `harness.run(..., run_id=...)`. A human decision records `wait_until` (now plus `approval_ttl_s`, default 24 hours). The next load or approve after that time finishes the run as `expired`. The process does not sleep.
 - **Injection refusal** — PR comments that would copy a known canary or "ignore findings / approve" override are refused before the side effect lands. The scanner normalizes text first (NFKC, casefold, zero-width characters removed, whitespace collapsed), so case, spacing and zero-width variants still match. The scanner is a fixed list of canary patterns and override phrases, not a general injection detector.
 - **Confidence gating** — agents self-report confidence (0.0–1.0). Runs below `min_confidence` are blocked before their output reaches downstream systems.
 - **Optional prefilter** — set `RunConfig.prefilter` (a callable `(system, user) -> PreFilterDecision`) and `prefilter_skip_threshold` to skip the model when the decision's confidence is at or above the threshold. It is off unless both are set. The injection scanner sees the system prompt, every prior turn and the new message first; a hit in any of them forces the model call. A prefilter that raises fails the run without calling the model. On a skipped run the gate uses the lower of the decision's and the payload's confidence (a payload with no `confidence` counts as 0.0).
@@ -162,7 +162,7 @@ The post-call cost check is a different path: the model has already answered, th
 | Over budget | Same markdown. Worst-case cost is above `max_cost_usd` (0.50). The client is not called. | 1 |
 | Bad JSON | Same markdown. Reason text says the body was not JSON. Two harness attempts. | 1 |
 
-Is HOLD on a model outage the intended default for deploy-risk, or do you want an optional rules-only fallback? The fallback is not in this tree.
+HOLD is the deploy-risk result when the model is down. There is no rules-only fallback.
 
 ## AI philosophy
 

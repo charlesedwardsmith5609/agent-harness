@@ -101,3 +101,14 @@ Choice for 11 (conservative reading): on a prefilter-skipped run, the gate uses 
 Choice for 10: with `--json`, stdout is exactly one JSON document for `evals.run_eval` (single run and `--sweep-effort`) and for `evals.run_policy_eval`. Regression and failure text goes to stderr in that mode; without `--json` it stays on stdout. `run_eval` and `run_policy_eval` gained `main(argv)` so this is testable.
 
 Why: Lower-of-two never raises trust. Machine consumers can parse stdout without stripping text.
+
+## 2026-11-17: Approval expiry, HOLD, and the daily cap
+
+Context: Three questions were left open after the always-on map, the degraded-mode tables, and the spend-cap note.
+
+Choice:
+- A gated decision with `require_human` expires. `RunConfig.approval_ttl_s` defaults to 86400 seconds. `submit_decision` arms `wait_until` once. `expire_if_due` finishes the run as `done` / `expired` when the deadline has passed. The caller thread checks on load, approve, close, and effects. There is no timer thread. `None` turns it off; a snapshot that predates the field does not expire.
+- HOLD stays the deploy-risk result when the model is down. No rules-only fallback.
+- `max_cost_usd_per_day` on the audit log stays the cross-run cap. It stays opt-in. The store counter in `plans/step-4.md` is not built.
+
+Why: A human wait needs a deadline that survives the process. The outage path already fails closed as HOLD. A second spend counter would duplicate the audit-log refusal.

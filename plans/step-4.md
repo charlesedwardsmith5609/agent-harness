@@ -25,7 +25,7 @@ Outbox limits the doc will state, because the key is not an outbox:
 - `review_diff` saves the snapshot before `review_pr` posts, and `review_pr` does not save after `commit_effect`. The runbook CLI saves after `settle_runbook` and does not save after a successful `commit_effect` (`note_effect_failure` does save on `OSError`). A later process cannot see the key.
 - `tests/fake_effects.py` DUPLICATE means the outside system already holds the key. The GitHub poster and the runbook write do not consult an outside system; they only consult the machine.
 
-The doc ends with one question, unanswered: should an approval that sits too long expire (a lifecycle wait-until timer), or is that out of scope?
+The doc ended with one question: should an approval that sits too long expire? Answered 2026-11-17: yes. `plans/step-5.md` is that wait-until.
 
 ## Item 2 — degraded-mode contract
 
@@ -46,7 +46,7 @@ What downstream sees after that end state:
 
 README: the fail-safe bullet links to a `## Degraded mode` section that holds a table per agent, the retry note, the post-call cost note, and the daily-cap note. The bullet stops saying every failure is BLOCK or HOLD, because pr-reviewer exits 3 with no gate decision.
 
-Question at the end of that section, unanswered: is HOLD on a model outage the intended default for deploy-risk, or do you want an optional rules-only fallback? The fallback is not built.
+Question at the end of that section, answered 2026-11-17: HOLD is the deploy-risk outage default. The fallback is not built.
 
 ### Tests
 
@@ -68,8 +68,8 @@ A failing assertion on pr-reviewer or deploy-risk means the table is wrong, and 
 
 Under `[Unreleased]`, date 2026-11-16:
 
-- Always-on map in `docs/always-on-agents.md`. Inbox and durable timers are missing. Question left open: should a gated approval expire?
-- Degraded-mode tables and offline tests for pr-reviewer, deploy-risk, and runbook-gen. Question left open: is HOLD the deploy-risk outage default?
+- Always-on map in `docs/always-on-agents.md`. Inbox is missing. A gated approval now expires (answered 2026-11-17).
+- Degraded-mode tables and offline tests for pr-reviewer, deploy-risk, and runbook-gen. HOLD is the deploy-risk outage default (answered 2026-11-17).
 - Design note only, in this file. Not implemented. `max_cost_usd_per_day` already refuses the next call from the audit log and fails the run.
 
 ## Item 3 — design note, nothing built
@@ -109,7 +109,7 @@ Pause applies only before `start`. `failed-retryable` is not a pause: `AgentHarn
 
 Not built. No new file, no lock, no change to `check_daily_budget`.
 
-Question: the shipped workflows cap nothing across runs. The code can refuse the next call when `AGENT_MAX_COST_USD_PER_DAY` is set and the audit log is a durable file, and that refusal fails the run. Do you want the store-backed counter above (UTC calendar day, one file lock, a not-yet-started run left in `planned` for a caller who retries that `run_id`), or is the current opt-in refusal enough?
+Decision (2026-11-17): the current opt-in audit-log refusal is enough. The store-backed counter above is not being built.
 
 ## Shared state
 

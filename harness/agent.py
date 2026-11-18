@@ -25,7 +25,7 @@ from typing import Any
 
 from harness.budget import BudgetExceeded, check_daily_budget
 from harness.injection import find_injection_markers
-from harness.lifecycle import ModelOutputError, Phase, RunMachine, is_model_retryable
+from harness.lifecycle import ModelOutputError, Phase, RunMachine, finite_seconds, is_model_retryable
 from harness.prefilter import PreFilterDecision, PreFilterError
 from harness.schemas import AgentScope
 from harness.store import LifecycleStore
@@ -152,6 +152,9 @@ class RunConfig:
     # Set by the harness owner for held-out eval runs. Written to the audit row so
     # mining can skip it. Never read from model output.
     held_out: bool = False
+    # Human decisions (require_human) expire after this many seconds in gated.
+    # None turns the wait-until off. The default is 24 hours.
+    approval_ttl_s: float | None = 86400.0
 
     def __post_init__(self) -> None:
         if self.max_cost_usd_per_day is not None and self.max_cost_usd_per_day < 0:
@@ -181,6 +184,10 @@ class RunConfig:
             model_allowlist = [str(item).strip() for item in self.allowed_models if str(item).strip()]
             check_model_allowed(self.model, model_allowlist)
             self.allowed_models = model_allowlist
+        if self.approval_ttl_s is not None:
+            self.approval_ttl_s = finite_seconds(self.approval_ttl_s, name="approval_ttl_s")
+            if self.approval_ttl_s < 0:
+                raise ValueError("approval_ttl_s must be >= 0")
         if self.reasoning_effort is None:
             return
         level = self.reasoning_effort.strip().lower()
@@ -237,7 +244,10 @@ class AgentHarness:
     def load_lifecycle(self, run_id: str) -> RunMachine | None:
         if self._store is None:
             return None
-        return self._store.load(run_id)
+        machine = self._store.load(run_id)
+        if machine is not None and machine.expire_if_due():
+            self.save_lifecycle(machine)
+        return machine
 
     def run(
         self,
@@ -422,6 +432,9 @@ class AgentHarness:
                     raise RuntimeError(
                         f"lifecycle {run_id!r} belongs to {existing.agent_name!r}, not {self.config.agent_name!r}"
                     )
+                if existing.expire_if_due():
+                    self.save_lifecycle(existing)
+                    raise RuntimeError(f"approval wait elapsed for run {run_id!r}")
                 if existing.phase == Phase.FAILED_RETRYABLE:
                     existing.retry()
                 elif existing.phase != Phase.PLANNED:
@@ -438,6 +451,7 @@ class AgentHarness:
             run_id=minted,
             agent_name=self.config.agent_name,
             max_attempts=self.config.max_attempts,
+            approval_ttl_s=self.config.approval_ttl_s,
         )
         machine.start()
         self.save_lifecycle(machine)

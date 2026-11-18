@@ -7,7 +7,7 @@ This note maps each primitive onto the code in this repo. "Has" means the code d
 | Primitive | This repo |
 |-----------|-----------|
 | Event inbox | Missing |
-| Durable timers | Missing |
+| Durable timers | Partial: a gated human approval has a wait-until. Nothing wakes a process |
 | Persistent memory | Partial: durable state for one run, not memory the agent reads on wake |
 | Permission system | Has, with the limits below |
 | Outbound outbox | No outbox. Idempotency keys on one run are the nearest thing |
@@ -20,15 +20,20 @@ Nothing in this process receives an event. There is no queue, no subscriber, and
 
 `tests/fake_effects.py` `FakeEffectProvider._queue` is a script of test scenarios. It is not an event inbox.
 
-## Durable timers — missing
+## Durable timers — partial
 
-Nothing wakes a run later.
+A human decision can expire. Nothing in this process wakes itself up.
 
-`harness/lifecycle.py` `RunMachine._entry` stores a UTC timestamp on a transition that has already happened. No code reads that timestamp to fire a follow-up. `RunMachine.approve` and `RunMachine.close` run only when a caller invokes them. A run that is `gated` and waiting on a person stays there until that call. There is no wait-until, no deadline, and no scheduler.
+Has:
 
-`examples/observability/demo.py` calls `time.sleep(6)` so a local OpenTelemetry batch can flush. That sleep is not saved, and it is not a lifecycle timer.
+- `RunMachine.submit_decision(..., require_human=True)` sets `wait_until` to now plus `approval_ttl_s` when that ttl is set and no deadline is armed yet. A second submit does not move it. `RunConfig.approval_ttl_s` defaults to 86400 seconds and is copied onto a new machine. `None` is the off switch, and it is also what a snapshot from before this field loads as.
+- `RunMachine.expire_if_due` moves `gated` to `done` with outcome `expired` when `now >= wait_until`. `approve` then raises. `close` keeps `expired` rather than `blocked`. `perform_effect` expires first, so a mutating effect does not run.
+- `AgentHarness.load_lifecycle` and `_begin_machine` run that check and save. A resume of a due gated run raises `approval wait elapsed` and does not call the model.
+- The deadline is in `to_dict` / `from_dict`.
 
-`harness/agent.py` `AgentHarness._begin_machine` resumes `planned`. It also loads `failed-retryable`, and for a model-call retry it calls `retry()` immediately. A side-effect retry loaded the same way raises `TransitionError`, because `retry()` then requires the idempotency key and `_begin_machine` does not pass one. Inside `AgentHarness.run`, a model failure that stops in `failed-retryable` is retried immediately. None of these is a "wait until" state.
+Still missing: a scheduler. The check runs when something loads or moves the machine. `examples/observability/demo.py` `time.sleep(6)` only flushes a local OpenTelemetry batch.
+
+`_begin_machine` still resumes `planned`, and a model-call `failed-retryable`, immediately. A side-effect retry loaded the same way raises `TransitionError`, because `retry()` then requires the idempotency key. That is not a wait-until.
 
 ## Persistent memory — partial
 
@@ -81,6 +86,6 @@ That is not an outbox.
 
 There is no durable queue of outbound work for a later drainer to send.
 
-## Question
+## Decision
 
-Should an approval that sits too long expire (a lifecycle wait-until timer), or is that out of scope?
+A gated human approval expires. The default wait is 24 hours (`RunConfig.approval_ttl_s`). There is still no process that wakes on its own.

@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-16
 
+- Dependabot cooldown: `default-days: 7` for `pip` and `github-actions`, so version updates wait a week after release. Security updates are not delayed. Text test in `tests/test_dependabot_cooldown.py`. Implemented on the proposed default, pending owner confirmation.
 - `evals/baseline.json` records its `model` (`offline` for the checked-in floors) and harness `settings`. Live eval payloads carry both. `check_baseline` and `run_eval` warn when the run model differs from the baseline model, and fail only under `PAIRING_STRICT=1` (`run_eval` with `--check-baseline`). A baseline or summary with no model only warns. Implemented on the stated default, pending owner confirmation.
 - DECISIONS caveat: the honeypot scope cases (`02-honeypot-exfil-tool`, `04-shell-honeypot`) are weak evidence if a model ever sees them, because the targets look artificial. A realistic case is suggested, not added. Circuit-breaker report and note are in `plans/step-6.md` only; nothing built.
 - Design note `docs/effect-reversibility.md`: four effect classes (reversible, compensable, delayable, irreversible), the undo record on the lifecycle machine, and the fake effect scenarios under each class. Not built; two open questions recorded.

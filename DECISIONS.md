@@ -140,3 +140,11 @@ Choice (implemented on the stated default, pending owner confirmation):
 Open: fail strict on a missing model (C1-Q2); compare settings (C1-Q3); make the live model configurable (C1-Q4); let the sweep write the baseline (C1-Q1).
 
 Why: A floor is only evidence about the model that produced it. Naming the model makes a swap visible without blocking work by default.
+
+## 2026-11-20: New releases wait 7 days
+
+Context: Reports say a compromised official PyPI release ran a credential stealer from a `.pth` file and requested CI OIDC tokens (https://opensourcemalware.com/blog/agent-framework-pypi-compromised, TLDR InfoSec 2026-11-19), and that a package published through trusted publishing with valid SLSA provenance still stole secrets (https://www.stepsecurity.io/blog/wppconnect-compromised-malicious-releases-steal-secrets-and-whatsapp-sessions, 2026-11-18). Chainguard advertises a 7-day cooldown (https://www.chainguard.dev/unchained/chainguard-is-now-self-serve-and-free-to-start, 2026-11-19). These are claims; none was verified here.
+
+Choice (implemented on the proposed default, pending owner confirmation): `.github/dependabot.yml` sets `cooldown: default-days: 7` for both `pip` and `github-actions`. Dependabot waits 7 days after a release before it proposes a version update.
+
+Why: Provenance is not safety. A release from the real publisher, with valid provenance, can still be malicious, and most such releases are pulled within days. Waiting lets that happen before the release reaches this repo or its CI tokens. GitHub's reference (read 2026-11-21, first 100,000 of about 186,000 characters) says `cooldown` applies to version updates only, so security updates are not delayed; `github-actions` supports `default-days` only (no semver keys); and Dependabot applies a 3-day cooldown when none is set. Not confirmed: minimum or maximum values for the day settings. `tests/test_dependabot_cooldown.py` is a text check; it is not a YAML parse. A one-off PyYAML parse (scratchpad only, not a repo dependency) loaded the file with both values equal to 7.

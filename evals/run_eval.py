@@ -19,8 +19,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agents.pr_reviewer import REVIEW_MODEL
 from evals.categories import rates_by_category
-from evals.check_baseline import case_regressions, load_baseline, regressions
+from evals.check_baseline import case_regressions, load_baseline, model_pairing, regressions, strict_pairing
+from harness.defaults import effort_for
 
 CASES_DIR = Path(__file__).parent / "cases"
 BLOCKING = {"BLOCK", "REQUEST_CHANGES"}
@@ -186,6 +188,11 @@ def run_with_costs(
     return rows, summarize(rows), mean_cost
 
 
+def live_settings(effort: str | None) -> dict[str, Any]:
+    """The harness settings a live review runs with. Recorded next to the model in the payload."""
+    return {"max_tokens": 2048, "min_confidence": 0.65, "max_cost_usd": 0.30, "reasoning_effort": effort}
+
+
 def _live_review(diff: str, *, reasoning_effort: str | None = None) -> tuple[dict[str, Any] | None, float]:
     from agents.pr_reviewer import review_diff
     from harness.agent import AgentHarness, RunConfig
@@ -194,14 +201,7 @@ def _live_review(diff: str, *, reasoning_effort: str | None = None) -> tuple[dic
         # Use the agent's default RunConfig (including its reasoning_effort).
         result = review_diff(diff)
     else:
-        config = RunConfig(
-            agent_name="pr-reviewer",
-            model="claude-sonnet-5-5",
-            max_tokens=2048,
-            min_confidence=0.65,
-            max_cost_usd=0.30,
-            reasoning_effort=reasoning_effort,
-        )
+        config = RunConfig(agent_name="pr-reviewer", model=REVIEW_MODEL, **live_settings(reasoning_effort))
         result = review_diff(diff, harness=AgentHarness(config=config))
     return (result.data if result.success else None), result.cost_usd
 
@@ -247,6 +247,15 @@ def main(argv: list[str] | None = None) -> None:
             _report(problems, "baseline regression", json_mode=args.json)
             raise SystemExit(1)
 
+    def _check_pairing() -> None:
+        warnings, problems = model_pairing(load_baseline(), REVIEW_MODEL, strict=strict_pairing())
+        if warnings:
+            _report(warnings, "baseline model warning", json_mode=args.json)
+        if problems:
+            _report(problems, "baseline model mismatch", json_mode=args.json)
+            if args.check_baseline:
+                raise SystemExit(1)
+
     if args.sweep_effort:
         results: dict[str, dict[str, Any]] = {}
         for level in EFFORT_SWEEP:
@@ -266,16 +275,17 @@ def main(argv: list[str] | None = None) -> None:
             },
             "chosen_effort": chosen,
             "baseline_effort": EFFORT_SWEEP[-1],
+            "model": REVIEW_MODEL,
+            "settings": live_settings(chosen),
         }
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
             print(f"\ncheapest effort that holds quality vs {EFFORT_SWEEP[-1]!r}: {chosen}")
         _maybe_check(results[chosen]["summary"])
+        _check_pairing()
         # Held-out cases are scored once at the chosen effort. They did not take part in the choice.
-        held_problems = held_out_problems(
-            lambda d: _live_review(d, reasoning_effort=chosen), load_baseline()
-        )
+        held_problems = held_out_problems(lambda d: _live_review(d, reasoning_effort=chosen), load_baseline())
         if held_problems:
             _report(held_problems, "per-case regression", json_mode=args.json)
             if args.check_baseline:
@@ -283,7 +293,14 @@ def main(argv: list[str] | None = None) -> None:
     else:
         rows, summary, mean_cost = run_with_costs(lambda d: _live_review(d, reasoning_effort=args.effort))
         if args.json:
-            print(json.dumps({"rows": rows, "summary": summary, "mean_cost_usd": mean_cost}, indent=2))
+            payload = {
+                "rows": rows,
+                "summary": summary,
+                "mean_cost_usd": mean_cost,
+                "model": REVIEW_MODEL,
+                "settings": live_settings(args.effort or effort_for("pr-reviewer")),
+            }
+            print(json.dumps(payload, indent=2))
         else:
             for r in rows:
                 inject = ""
@@ -296,6 +313,7 @@ def main(argv: list[str] | None = None) -> None:
             _print_summary(summary)
             print(f"mean_cost_usd={mean_cost:.4f}")
         _maybe_check(summary)
+        _check_pairing()
         case_problems = case_regressions(rows, load_baseline())
         if case_problems:
             _report(case_problems, "per-case regression", json_mode=args.json)

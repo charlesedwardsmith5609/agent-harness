@@ -125,3 +125,26 @@ Choice: Record the caveat only. No eval case is added or changed.
 Open question B3-Q1: add the realistic case? Recommendation: only once a model-driven scope eval exists.
 
 Why: A reader of the eval table should not take "honeypot: pass" as proof that a model resists exfiltration.
+
+## 2026-11-20: Baseline records its model
+
+Context: `evals/baseline.json` had floors and no model id. Reports claim that behaviour on the same instructions changes when the model changes (https://davenporter.com/writings/agent-harnesses-cheap-to-swap-behavior-isnt, TLDR Dev 2026-11-20; FrontierHarness eval v1.1, https://runta.com/blog/introducing-frontierharness-eval-v1-1/, TLDR AI 2026-11-18). Both are single-source claims, not checked here.
+
+Choice (implemented on the stated default, pending owner confirmation):
+- `baseline.json` has a `model` field and a `settings` object (max_tokens, min_confidence, max_cost_usd, reasoning_effort). The checked-in floors were not measured on any model, so they say `"offline"`. A live sweep payload (`run_eval --sweep-effort --json`) and a single-run payload carry `model` and `settings`; whoever copies the winner into `baseline.json` copies both. The sweep does not write the file.
+- A live run, and `check_baseline --summary` when the summary has a `model`, compares the baseline model with the run model. A mismatch is a warning. Under `PAIRING_STRICT=1` it is a failure (`run_eval` exits 1 only with `--check-baseline`, like a floor regression).
+- A baseline or summary with no `model` only warns, in both modes. An old baseline still reads.
+- Only `model` is compared. `settings` are recorded, not compared.
+- Consequence: until a live sweep replaces `"offline"`, every live run warns, and a live `--check-baseline` under `PAIRING_STRICT=1` fails. The floors were not measured on that model.
+
+Open: fail strict on a missing model (C1-Q2); compare settings (C1-Q3); make the live model configurable (C1-Q4); let the sweep write the baseline (C1-Q1).
+
+Why: A floor is only evidence about the model that produced it. Naming the model makes a swap visible without blocking work by default.
+
+## 2026-11-20: New releases wait 7 days
+
+Context: Reports say a compromised official PyPI release ran a credential stealer from a `.pth` file and requested CI OIDC tokens (https://opensourcemalware.com/blog/agent-framework-pypi-compromised, TLDR InfoSec 2026-11-19), and that a package published through trusted publishing with valid SLSA provenance still stole secrets (https://www.stepsecurity.io/blog/wppconnect-compromised-malicious-releases-steal-secrets-and-whatsapp-sessions, 2026-11-18). Chainguard advertises a 7-day cooldown (https://www.chainguard.dev/unchained/chainguard-is-now-self-serve-and-free-to-start, 2026-11-19). These are claims; none was verified here.
+
+Choice (implemented on the proposed default, pending owner confirmation): `.github/dependabot.yml` sets `cooldown: default-days: 7` for both `pip` and `github-actions`. Dependabot waits 7 days after a release before it proposes a version update.
+
+Why: Provenance is not safety. A release from the real publisher, with valid provenance, can still be malicious, and most such releases are pulled within days. Waiting lets that happen before the release reaches this repo or its CI tokens. GitHub's reference (read 2026-11-21, first 100,000 of about 186,000 characters) says `cooldown` applies to version updates only, so security updates are not delayed; `github-actions` supports `default-days` only (no semver keys); and Dependabot applies a 3-day cooldown when none is set. Not confirmed: minimum or maximum values for the day settings. `tests/test_dependabot_cooldown.py` is a text check; it is not a YAML parse. A one-off PyYAML parse (scratchpad only, not a repo dependency) loaded the file with both values equal to 7.

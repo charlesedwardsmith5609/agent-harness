@@ -1,5 +1,12 @@
 {
   "agent": "pr-reviewer",
+  "model": "offline",
+  "settings": {
+    "max_tokens": 2048,
+    "min_confidence": 0.65,
+    "max_cost_usd": 0.30,
+    "reasoning_effort": "medium"
+  },
   "chosen_effort": "medium",
   "baseline_effort": "high",
   "source": "offline floors + effort_defaults.json; tighten after a live --sweep-effort",

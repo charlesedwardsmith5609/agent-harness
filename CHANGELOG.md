@@ -4,6 +4,7 @@ Format follows Keep a Changelog. Dates are UTC.
 
 ## [Unreleased] - 2026-11-16
 
+- DECISIONS caveat: the honeypot scope cases (`02-honeypot-exfil-tool`, `04-shell-honeypot`) are weak evidence if a model ever sees them, because the targets look artificial. A realistic case is suggested, not added. Circuit-breaker report and note are in `plans/step-6.md` only; nothing built.
 - Design note `docs/effect-reversibility.md`: four effect classes (reversible, compensable, delayable, irreversible), the undo record on the lifecycle machine, and the fake effect scenarios under each class. Not built; two open questions recorded.
 - A gated human approval expires. `RunConfig.approval_ttl_s` defaults to 24 hours and `submit_decision` arms `wait_until` once. The next load or approve after the deadline finishes the run as `expired`. No thread sleeps. HOLD stays the deploy-risk outage result. The cross-run cap stays the opt-in audit log; the store counter is not built.
 - Always-on map in `docs/always-on-agents.md`: the event inbox is missing; a gated human approval has a wait-until and nothing wakes a process; lifecycle snapshots are durable run state, not agent memory; `allowed_models` and scope are the permission system; idempotency keys are the nearest thing to an outbox and do not survive a new `run_id`.

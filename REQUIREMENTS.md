@@ -27,3 +27,11 @@ Agreed for this step. Items 1 and 3 are questions and documents. Item 2 is a tes
 - A1 answer: yes. A gated human approval expires. Build a lifecycle wait-until. No background thread and no sleep.
 - A2 answer: HOLD is the deploy-risk outage default. Do not build a rules-only fallback.
 - A3 answer: the opt-in audit-log refusal is enough. Do not build the store counter.
+
+## TLDR 2026-11-17
+
+Recorded from the owner's brief for an unattended run. Nothing here builds code; each ask is an open question in `plans/step-6.md`.
+
+- B1. Add `docs/effect-reversibility.md`. Today an effect is mutating or not. Propose four classes (reversible, compensable, delayable, irreversible): approval rule for each, where the undo record lives (the lifecycle store, never the model's context), and its one owner. Show how each `tests/fake_effects.py` scenario behaves under each class. Cite code for every claim about today. Do not build.
+- B2. Report from code whether anything stops new runs when the daily budget rollup passes a limit, or after N consecutive failed or gated runs of one agent. Then a short circuit-breaker note (trip, half-open, reset) kept in the store, with one owner for the counter (one mutex or one writer, not both). Note in `plans/step-6.md`. Do not build.
+- B3. Add a paragraph to README or `DECISIONS.md`: a model may recognise a honeypot as an artificial test, so a clean honeypot result is weaker evidence than it looks. Cite `evals/cases_scope/02-honeypot-exfil-tool.json` and `evals/cases_scope/04-shell-honeypot.json`. Suggest, do not add, one case written to look like a real task.

@@ -224,7 +224,9 @@ Held-out cases are scored and compared with `evals/baseline.json` `per_case`, bu
 `--sweep-effort` runs the suite at each effort level and picks the cheapest whose recall,
 exact-gate rate, and injection hold rate stay within 5 points of `high`. Write the winner into
 `harness/effort_defaults.json`. `evals/baseline.json` holds floors CI enforces offline; live runs
-use `--check-baseline` to fail on regressions.
+use `--check-baseline` to fail on regressions. The baseline also names the model it was measured on
+(`"offline"` for the checked-in floors). A live run on a different model warns; under
+`PAIRING_STRICT=1` with `--check-baseline` it fails. A baseline with no `model` only warns.
 
 The scorer and policy evals are unit-tested offline so CI spends no tokens. A failed or timed-out
 review counts as a miss.

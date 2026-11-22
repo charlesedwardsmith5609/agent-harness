@@ -125,3 +125,18 @@ Choice: Record the caveat only. No eval case is added or changed.
 Open question B3-Q1: add the realistic case? Recommendation: only once a model-driven scope eval exists.
 
 Why: A reader of the eval table should not take "honeypot: pass" as proof that a model resists exfiltration.
+
+## 2026-11-20: Baseline records its model
+
+Context: `evals/baseline.json` had floors and no model id. Reports claim that behaviour on the same instructions changes when the model changes (https://davenporter.com/writings/agent-harnesses-cheap-to-swap-behavior-isnt, TLDR Dev 2026-11-20; FrontierHarness eval v1.1, https://runta.com/blog/introducing-frontierharness-eval-v1-1/, TLDR AI 2026-11-18). Both are single-source claims, not checked here.
+
+Choice (implemented on the stated default, pending owner confirmation):
+- `baseline.json` has a `model` field and a `settings` object (max_tokens, min_confidence, max_cost_usd, reasoning_effort). The checked-in floors were not measured on any model, so they say `"offline"`. A live sweep payload (`run_eval --sweep-effort --json`) and a single-run payload carry `model` and `settings`; whoever copies the winner into `baseline.json` copies both. The sweep does not write the file.
+- A live run, and `check_baseline --summary` when the summary has a `model`, compares the baseline model with the run model. A mismatch is a warning. Under `PAIRING_STRICT=1` it is a failure (`run_eval` exits 1 only with `--check-baseline`, like a floor regression).
+- A baseline or summary with no `model` only warns, in both modes. An old baseline still reads.
+- Only `model` is compared. `settings` are recorded, not compared.
+- Consequence: until a live sweep replaces `"offline"`, every live run warns, and a live `--check-baseline` under `PAIRING_STRICT=1` fails. The floors were not measured on that model.
+
+Open: fail strict on a missing model (C1-Q2); compare settings (C1-Q3); make the live model configurable (C1-Q4); let the sweep write the baseline (C1-Q1).
+
+Why: A floor is only evidence about the model that produced it. Naming the model makes a swap visible without blocking work by default.

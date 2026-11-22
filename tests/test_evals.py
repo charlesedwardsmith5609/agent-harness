@@ -204,7 +204,7 @@ def test_run_eval_json_per_case_regression_goes_to_stderr(monkeypatch, capsys):
     run_eval.main(["--json"])
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert set(payload) == {"rows", "summary", "mean_cost_usd"}
+    assert set(payload) == {"rows", "summary", "mean_cost_usd", "model", "settings"}
     assert "per-case regression" in captured.err
     assert "per-case regression" not in captured.out
 

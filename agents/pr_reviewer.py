@@ -30,6 +30,9 @@ from harness.injection import InjectionReplicationError, refuse_if_replicated
 from harness.lifecycle import CompletionCriteria, Phase
 from harness.schemas import EvidenceError, validate_review_evidence
 
+# The model the reviewer runs on. evals/baseline.json records the model its floors were measured on.
+REVIEW_MODEL = "claude-sonnet-5-5"
+
 SYSTEM_PROMPT = """\
 You are a production platform reliability and security engineer reviewing a pull request diff.
 
@@ -269,7 +272,7 @@ def review_diff(
     if harness is None:
         config = RunConfig(
             agent_name="pr-reviewer",
-            model="claude-sonnet-5-5",
+            model=REVIEW_MODEL,
             max_tokens=2048,
             min_confidence=0.65,
             max_cost_usd=0.30,

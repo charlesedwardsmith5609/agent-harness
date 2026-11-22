@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 BASELINE_PATH = Path(__file__).parent / "baseline.json"
+# Label for floors that no model produced (the checked-in offline floors).
+OFFLINE_MODEL = "offline"
 
 
 def load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any]:
@@ -35,9 +38,7 @@ def case_regressions(rows: list[dict[str, Any]], baseline: dict[str, Any]) -> li
         if not isinstance(spec, dict):
             continue
         if "gate_exact" in spec and bool(row.get("gate_exact")) != bool(spec["gate_exact"]):
-            problems.append(
-                f"{case_id} gate_exact={bool(row.get('gate_exact'))} expected {bool(spec['gate_exact'])}"
-            )
+            problems.append(f"{case_id} gate_exact={bool(row.get('gate_exact'))} expected {bool(spec['gate_exact'])}")
     return problems
 
 
@@ -57,6 +58,29 @@ def regressions(summary: dict[str, float], baseline: dict[str, Any]) -> list[str
     return problems
 
 
+def strict_pairing() -> bool:
+    """PAIRING_STRICT=1 turns a model mismatch from a warning into a failure."""
+    return os.environ.get("PAIRING_STRICT") == "1"
+
+
+def model_pairing(baseline: dict[str, Any], run_model: str | None, *, strict: bool) -> tuple[list[str], list[str]]:
+    """Compare the model a baseline was measured on with the model of this run.
+
+    Returns (warnings, problems). A mismatch is a warning, and a problem under strict.
+    A baseline or run with no model is only a warning, strict or not: an old baseline
+    must still read. Pure: it does not read the environment.
+    """
+    base_model = baseline.get("model")
+    if not isinstance(base_model, str) or not base_model.strip():
+        return ["baseline has no model field; the model it was measured on is unknown"], []
+    if not isinstance(run_model, str) or not run_model.strip():
+        return ["run has no model field; cannot compare it with the baseline"], []
+    if base_model == run_model:
+        return [], []
+    text = f"baseline measured on {base_model!r}, this run used {run_model!r}; re-measure after a model change"
+    return ([], [text]) if strict else ([text], [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Check eval summary against evals/baseline.json")
     ap.add_argument(
@@ -67,6 +91,11 @@ def main() -> int:
     summary = payload.get("summary", payload)
     baseline = load_baseline()
     problems = regressions(summary, baseline)
+    run_model = payload.get("model") if isinstance(payload, dict) else None
+    warnings, model_problems = model_pairing(baseline, run_model, strict=strict_pairing())
+    for warning in warnings:
+        print(f"warning: {warning}")
+    problems += model_problems
     if problems:
         print("baseline regression:")
         for problem in problems:
